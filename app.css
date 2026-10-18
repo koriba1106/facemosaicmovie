@@ -1,0 +1,44 @@
+/* style.css（変更しない）に無い部品だけを足す。色・余白は style.css の変数を使う。
+   CSP（style-src 'self'）のため、HTML 内の style 属性は使わない。 */
+
+/* JavaScript のフレーム検査が済むまでは画面を出さない（クリックジャッキング対策の一部） */
+html:not(.fm-ok) .app { display: none; }
+.boot { max-width: 720px; margin: 48px auto; padding: 0 16px; }
+
+.side { display: grid; gap: 20px; min-width: 0; }
+
+/* 進捗: モザイクのブロックが埋まっていく */
+.blocks { display: grid; grid-template-columns: repeat(25, 1fr); gap: 2px; margin-top: 4px; }
+.blocks i { display: block; aspect-ratio: 1; background: var(--line); transition: background-color .2s; }
+.blocks i.on { background: var(--uguisu); }
+.blocks i.edge { background: #c9a227; }
+.progress-line { display: flex; justify-content: space-between; gap: 12px; font-size: .83rem; color: var(--muted); margin-top: 8px; }
+.progress-line b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.progress-line .text { min-width: 0; overflow-wrap: anywhere; }
+
+/* 出力結果 */
+.result video { width: 100%; display: block; border-radius: 14px; border: 1px solid var(--line); background: #000; }
+.result .meta { margin: 10px 0; }
+
+/* メッセージの種類（style.css には通常と .error のみ） */
+.status.ok { background: var(--pale); border-color: #b8c5a6; }
+.status.warn { background: #fbf3d9; border-color: #e3d08a; color: #5f4b00; }
+.status { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 診断ページ */
+.check-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.check-item { display: grid; grid-template-columns: 4.6em minmax(0, 1fr); gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: .9rem; }
+.check-item .tag { font-weight: 700; }
+.check-item.pass .tag { color: var(--uguisu-hover); }
+.check-item.fail { background: var(--danger-bg); border-color: #e6b8b8; }
+.check-item.fail .tag { color: var(--danger); }
+.check-item.warn { background: #fbf3d9; border-color: #e3d08a; }
+.check-item.warn .tag { color: #7a5f00; }
+.check-item small { display: block; margin-top: 2px; color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
+.figs { display: flex; flex-wrap: wrap; gap: 14px; margin: 16px 0; }
+.figs figure { margin: 0; max-width: 320px; }
+.figs img, .figs video { width: 100%; display: block; border: 1px solid var(--line); border-radius: 10px; background: #000; }
+.figs figcaption { font-size: .78rem; color: var(--muted); margin-top: 4px; }
+.verdict { margin: 16px 0; padding: 12px 14px; border-radius: 12px; font-weight: 700; background: var(--pale); color: var(--deep); border: 1px solid var(--line); }
+.verdict.ng { background: var(--danger-bg); color: var(--danger); border-color: #e6b8b8; }
+.report { width: 100%; min-height: 150px; }

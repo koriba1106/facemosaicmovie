@@ -1,0 +1,12 @@
+{
+  "name": "facemosaic-browser",
+  "version": "2.0.0",
+  "private": true,
+  "description": "動画の顔を自動認識・追跡してモザイクをかける、ブラウザだけで動く静的Webアプリ",
+  "scripts": {
+    "test": "bash tests/run_all.sh",
+    "integrity": "node tools/make-integrity.js",
+    "verify": "node tools/verify-integrity.js"
+  },
+  "devDependencies": { "jsdom": "30.1.2" }
+}

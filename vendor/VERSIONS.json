@@ -1,0 +1,22 @@
+{
+  "_comment": "同梱している外部ライブラリの出所と SHA-256。npm のパッケージ内の dist ファイルと同一であることを、下記の手順で確認できます。",
+  "vendor/opencv.js": {
+    "package": "@techstark/opencv-js",
+    "version": "5.0.0-release.1",
+    "file_in_package": "dist/opencv.js",
+    "license": "Apache-2.0",
+    "sha256": "b873c8211421da7b9bf41ae157a923f05a46a0b8d3e5904c44c6f3ad6d39a1bd"
+  },
+  "vendor/mediabunny.min.js": {
+    "package": "mediabunny",
+    "version": "1.61.3",
+    "file_in_package": "dist/bundles/mediabunny.min.mjs",
+    "license": "MPL-2.0",
+    "sha256": "d7b3a90e82158a7022729cbd4f861daf73cbb4f69d23349d2aefc9c8281cf70c"
+  },
+  "models/face_detection_yunet_2026may.onnx": {
+    "source": "提供されたファイル（YuNet dynamic-input 版）",
+    "sha256": "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0"
+  },
+  "verify": "npm pack @techstark/opencv-js@5.0.0-release.1 && tar xzf techstark-opencv-js-5.0.0-release.1.tgz && sha256sum package/dist/opencv.js"
+}

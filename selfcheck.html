@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light">
+<title>FaceMosaic Browser 動作診断</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="boot status" id="boot">読み込み中…</div>
+<noscript><div class="boot status error">この診断には JavaScript が必要です。</div></noscript>
+
+<div class="app" id="app">
+  <header>
+    <div class="brand">
+      <div class="mark" aria-hidden="true">◐</div>
+      <div>
+        <h1>動作診断</h1>
+        <p>この環境（ブラウザ・配置したファイル・顔認識モデル）で動くかを、順番に確認します。設置後に最初に1回実行してください。</p>
+      </div>
+    </div>
+    <div class="header-actions"><button type="button" class="subtle" id="backBtn">アプリに戻る</button></div>
+  </header>
+
+  <section class="panel">
+    <div class="panel-head"><h2>診断</h2></div>
+    <div class="controls">
+      <label class="file-zone" id="vidZone">
+        <input type="file" id="vid" accept="video/*,.mkv,.mov,.m4v">
+        <span id="vidTitle">通しテスト用の動画を選ぶ（任意・推奨）</span>
+        <small>実際に使う動画（スマホの縦動画を含む）で、先頭3秒を変換して確認します。動画は外部に送信されません。</small>
+      </label>
+      <div class="button-row">
+        <button type="button" class="primary" id="runBtn">診断を開始</button>
+      </div>
+      <ul class="check-list" id="rows" aria-live="polite"></ul>
+      <div class="verdict" id="verdict" hidden></div>
+      <div class="figs" id="figs"></div>
+      <div class="field">
+        <div class="field-header">
+          <span class="field-title">結果のコピー（問い合わせ時にそのまま貼り付けてください）</span>
+          <button type="button" class="subtle" id="copyBtn">コピー</button>
+        </div>
+        <pre class="test-box" id="report">（診断を開始すると、ここに結果が表示されます）</pre>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script src="js/core.js"></script>
+<script src="js/selfcheck.js"></script>
+</body>
+</html>

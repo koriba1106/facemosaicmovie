@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- セキュリティ: 自分のサイトのファイルだけを読み込む。インラインのスクリプト/スタイル・外部サイト・eval は許可しない。
+     （GitHub Pages では HTTP ヘッダーを設定できないため、meta で指定する） -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light">
+<title>FaceMosaic Browser</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="boot status" id="boot">読み込み中…（このまま変わらない場合は、JavaScript が無効か、ファイルが正しく置かれていません）</div>
+<noscript><div class="boot status error">このアプリの利用には JavaScript が必要です。ブラウザの設定で有効にしてください。</div></noscript>
+
+<div class="app" id="app">
+  <header>
+    <div class="brand">
+      <div class="mark" aria-hidden="true">◐</div>
+      <div>
+        <h1>FaceMosaic Browser</h1>
+        <p>動画の顔を自動で見つけて追いかけ、顔だけにモザイクをかけます。</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button type="button" class="subtle" id="diagBtn">動作診断</button>
+    </div>
+  </header>
+
+  <div class="steps" aria-label="手順">
+    <span class="step">① 動画を選ぶ</span>
+    <span class="step">② プレビューで確認</span>
+    <span class="step">③ 出力して保存</span>
+  </div>
+
+  <div id="banner" class="status" role="alert" hidden></div>
+
+  <div class="layout">
+    <section class="panel" aria-labelledby="hPreview">
+      <div class="panel-head">
+        <h2 id="hPreview">プレビュー</h2>
+        <button type="button" class="subtle" id="changeBtn" hidden>別の動画を選ぶ</button>
+      </div>
+
+      <label class="file-zone disabled" id="drop">
+        <input type="file" id="fileInput" accept="video/*,.mkv,.mov,.m4v" disabled>
+        <span id="dropTitle">エンジンを準備しています…</span>
+        <small id="dropHint">mp4 / mov / m4v / webm / mkv（ここにドロップもできます）</small>
+      </label>
+      <p class="meta" id="fileMeta" hidden></p>
+
+      <div class="preview" id="preview">
+        <div class="empty" id="empty">
+          <strong>動画を選ぶと、ここに表示されます</strong>
+          顔にモザイクが掛かった状態を確認できます。
+        </div>
+        <canvas id="previewCanvas" width="16" height="9" role="img" aria-label="モザイク適用後のプレビュー" hidden></canvas>
+      </div>
+
+      <div class="field" id="timeline" hidden>
+        <div class="field-header">
+          <label for="slider" class="field-title">再生位置</label>
+          <span class="badge" id="timeLabel">00:00 / 00:00</span>
+        </div>
+        <input type="range" id="slider" min="0" max="0" step="0.04" value="0">
+      </div>
+      <p class="hint" id="previewNote" hidden>スライダーを動かすと、その位置のフレームに顔検出とモザイクを適用して表示します（少し時間がかかります）。</p>
+    </section>
+
+    <div class="side">
+      <section class="panel" aria-labelledby="hSettings">
+        <div class="panel-head"><h2 id="hSettings">出力設定</h2></div>
+        <div class="controls">
+          <div class="field">
+            <label for="quality">出力品質</label>
+            <select id="quality">
+              <option value="standard" selected>標準画質（高品質）</option>
+              <option value="compact">軽量コンパクト（容量約0.40倍を目標）</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="accuracy">顔検出の精度</label>
+            <select id="accuracy">
+              <option value="high" selected>高精度（標準）</option>
+              <option value="fast">高速（約2倍速。小さい顔は見逃しやすい）</option>
+            </select>
+            <small>この端末の性能によっては、1分の動画に数分かかります。</small>
+          </div>
+          <div class="field">
+            <span class="field-title">顔認識エンジン</span>
+            <div class="status" id="engineState">準備中…</div>
+            <div id="modelPick" hidden>
+              <button type="button" class="subtle" id="modelBtn">モデルファイル(.onnx)を選択</button>
+              <input type="file" id="modelInput" accept=".onnx" hidden>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="hExport">
+        <div class="panel-head"><h2 id="hExport">書き出し</h2></div>
+        <div class="action-stack">
+          <button type="button" class="primary" id="exportBtn" disabled>動画を出力</button>
+          <button type="button" class="secondary" id="cancelBtn" disabled>中断</button>
+          <div id="progress" hidden>
+            <div class="blocks" id="blocks" aria-hidden="true"></div>
+            <div class="progress-line"><span class="text" id="progText" role="status"></span><b id="progPct">0%</b></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel result" id="result" aria-labelledby="hResult" hidden>
+        <div class="panel-head"><h2 id="hResult">出力結果</h2></div>
+        <video id="resultVideo" controls playsinline preload="metadata"></video>
+        <p class="meta" id="resultSummary"></p>
+        <div class="status warn" id="resultWarn" hidden></div>
+        <div class="action-stack">
+          <button type="button" class="primary" id="downloadBtn">ダウンロード</button>
+        </div>
+      </section>
+
+      <div class="privacy">
+        動画はこのパソコンの中だけで処理され、外部には送信されません。処理中はこのタブを閉じたり、別のタブに切り替えたりしないでください（ブラウザが処理を遅くすることがあります）。
+      </div>
+    </div>
+  </div>
+
+  <p class="footer">© 武庫勤労者山岳会（武庫労山）  All Rights Reserved.</p>
+</div>
+
+<script src="js/core.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
