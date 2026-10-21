@@ -120,14 +120,15 @@ const check = (name, ok, detail) => { ok ? passes++ : fails++; console.log((ok ?
     for (const [w, h] of [[320, 240], [641, 481], [1280, 720]]) { DL.p.faces = [FACE]; setValid(DL, w, h, 960); pl.processFrame(mkFrame(w, h), w, h, 960, true); }
     check("解像度が変わっても、古い Mat は解放される(常駐は5個のまま)", live.size === 5, live.size);
     pl.dispose(); check("dispose() で、全ての Mat が解放される(生存0個)", live.size === 0, live.size);
-    let threw = false; const Dx = mkDet(); Dx.p.fail = true; const px = new PL.FacePipeline(cvT, FM, Dx); try { px.processFrame(fb, 640, 360, 960, true); } catch (e) { threw = true; }
-    check("検出が例外を投げても、そのフレームで作った Mat は解放される(例外経路のリーク無し)", threw && live.size === 5, live.size); px.dispose();
+    const Dx = mkDet(); Dx.p.fail = true; const px = new PL.FacePipeline(cvT, FM, Dx); const rx = px.processFrame(fb, 640, 360, 960, true);
+    check("検出が例外を投げても、そのフレームで作った Mat は解放される(例外経路のリーク無し)", rx.detectError && live.size === 5, live.size); px.dispose();
     check("例外後に dispose すると生存0個", live.size === 0, live.size);
   } finally { restore(); }
 
   // ---- 異常系 ----
-  const Df = mkDet(); Df.p.fail = true; let msg = ""; try { new PL.FacePipeline(cv, FM, Df).processFrame(mkFrame(64, 64), 64, 64, 960, true); } catch (e) { msg = e.message; }
-  check("検出器の例外は呼び出し側へ伝播(上位でフレーム単位に処理する)", msg === "detector boom", msg);
+  const Df = mkDet(); Df.p.fail = true; const rf = new PL.FacePipeline(cv, FM, Df).processFrame(mkFrame(64, 64), 64, 64, 960, true);
+  check("検出器の例外は握りつぶさず detectError として返す(上位でフレーム単位に数える)。追跡は『検出なし』として進む", rf.detectError && rf.detectError.message === "detector boom" && rf.faces === 0 && rf.tracks === 0, JSON.stringify(rf));
+  let msg = "";
   let msg2 = ""; try { new PL.FacePipeline(cv, FM, mkDet()).processFrame(new Uint8ClampedArray(10), 64, 64, 960, true); } catch (e) { msg2 = e.message; }
   check("フレームサイズ不正は明確なエラー", msg2.includes("サイズ"), msg2);
   let emsg = ""; try { PL.createDynamicDetector(cv, FM, new Uint8Array(200000).buffer); } catch (e) { emsg = String(e.message || e); }

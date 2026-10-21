@@ -176,6 +176,69 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const ef = ms.find((m) => m.type === "error");
   check("検出が連続30回失敗したら中止(無限に続けない)", ef && ef.message.includes("連続"), JSON.stringify(ef));
 
+
+  // ---- 手動モザイク（範囲指定） ----
+  st.recordOutputs = true;      // このセクションの間だけ、フレームごとの出力を記録する（メモリ検査に影響させない）
+  {
+    st.width = 640; st.height = 360; setValid(640, 360, 960);
+    const REG = (o) => ({ x: 0.05, y: 0.55, w: 0.2, h: 0.3, start: 0.5, end: null, ...o });          // 画面左下（顔の位置とは別）
+    const painted = new OffscreenCanvas(640, 360); painted._ctx.__paint(); const base = painted._data;
+    const changedIn = (data, x1, y1, x2, y2) => { let n = 0; for (let y = y1; y < y2; y++) for (let x = x1; x < x2; x++) { const i = (y * 640 + x) * 4; if (data[i] !== base[i] || data[i + 1] !== base[i + 1]) n++; } return n; };
+    const REGION_BOX = [32, 198, 160, 306];                    // 0.05*640, 0.55*360, 0.25*640, 0.85*360
+
+    // 書き出し: 開始時刻(0.5秒)以降のフレームだけに掛かる。フレーム時刻 = i/30
+    ms = await send({ type: "export", file: FILE, quality: "standard", regions: [REG({ start: 0.5 })] });
+    const dn = ms.find((m) => m.type === "done"); const outs = st.lastConversion.outs;
+    const inReg = outs.map((o) => changedIn(o.lastPut, ...REGION_BOX));
+    check(`書き出し: 手動範囲は開始時刻(0.5秒=15フレーム目)から掛かる(掛かったフレーム ${inReg.filter((n) => n > 1000).length}/30, 最初=${inReg.findIndex((n) => n > 1000)})`, inReg.findIndex((n) => n > 1000) === 15 && inReg.slice(15).every((n) => n > 1000) && inReg.slice(0, 15).every((n) => n === 0), inReg.join());
+    check("書き出し: 完了通知に手動範囲の件数を含める", dn.manualCount === 1);
+    const faceIn = outs.map((o) => changedIn(o.lastPut, 240, 80, 372, 215));
+    check("書き出し: 手動範囲があっても、顔の自動モザイクは全フレームで掛かる", faceIn.every((n) => n > 2000), faceIn.join());
+
+    // 継続秒数: 0.2秒〜0.5秒 → 約9フレーム（i=6..14）
+    ms = await send({ type: "export", file: FILE, quality: "standard", regions: [REG({ start: 0.2, end: 0.5 })] });
+    const inReg2 = st.lastConversion.outs.map((o) => changedIn(o.lastPut, ...REGION_BOX)); const idx = inReg2.map((n, i) => (n > 1000 ? i : -1)).filter((i) => i >= 0);
+    check(`書き出し: 終了時刻(0.5秒)で解除される(掛かったフレーム ${idx[0]}〜${idx[idx.length - 1]})`, idx[0] === 6 && idx[idx.length - 1] === 14 && idx.length === 9, idx.join());
+
+    // 複数・重なり・範囲なし
+    ms = await send({ type: "export", file: FILE, quality: "standard", regions: [REG({ start: 0 }), REG({ x: 0.7, y: 0.05, w: 0.25, h: 0.25, start: 0.4, end: 0.6 })] });
+    const o3 = st.lastConversion.outs; const topRight = o3.map((o) => changedIn(o.lastPut, 448, 18, 608, 108));
+    check("書き出し: 複数の範囲を、それぞれの時刻で掛ける(右上は 12〜17フレーム目のみ)", o3.every((o) => changedIn(o.lastPut, ...REGION_BOX) > 1000) && topRight.findIndex((n) => n > 500) === 12 && topRight.filter((n) => n > 500).length === 6, topRight.join());
+    ms = await send({ type: "export", file: FILE, quality: "standard" });
+    check("書き出し: 範囲を指定しなければ、手動モザイクは掛からない(従来どおり)", st.lastConversion.outs.every((o) => changedIn(o.lastPut, ...REGION_BOX) === 0) && ms.find((m) => m.type === "done").manualCount === 0);
+
+    // プレビュー: そのフレームの時刻に有効な範囲だけを掛け、実際のフレーム時刻を返す
+    let prev = await send({ type: "preview", file: FILE, time: 5, id: 41, accuracy: "high", regions: [REG({ start: 0 })] });
+    check("プレビュー: 実際に表示したフレームの時刻(frameTime)を返す", prev[0].type === "preview" && typeof prev[0].frameTime === "number" && prev[0].frameTime > 4.5 && prev[0].frameTime <= 5.001, JSON.stringify(prev[0].frameTime));
+    const lastOutCanvas = () => globalThis.__lastBlobCanvas;
+    // blob 化した canvas の画素を取得するため、convertToBlob をフックして最後の canvas を保持
+    const origCTB = OffscreenCanvas.prototype.convertToBlob; OffscreenCanvas.prototype.convertToBlob = async function (o) { globalThis.__lastBlobCanvas = this; return origCTB.call(this, o); };
+    const pv = async (regions, time = 5) => { await send({ type: "preview", file: FILE, time, id: 42, accuracy: "high", regions }); return globalThis.__lastBlobCanvas._data; };
+    check("プレビュー: 開始時刻以降の範囲は掛かり、まだ始まっていない範囲は掛からない", changedIn(await pv([REG({ start: 0 })]), ...REGION_BOX) > 1000 && changedIn(await pv([REG({ start: 9 })]), ...REGION_BOX) === 0);
+    check("プレビュー: 終了時刻を過ぎた範囲は掛からない", changedIn(await pv([REG({ start: 0, end: 2 })]), ...REGION_BOX) === 0 && changedIn(await pv([REG({ start: 0, end: 60 })]), ...REGION_BOX) > 1000);
+    check("プレビュー: 範囲なしでは手動モザイクは掛からない", changedIn(await pv([]), ...REGION_BOX) === 0);
+    // 要求した時刻は 5.0 秒、実際に表示するフレームは 4.89 秒（直前のフレーム）。判定は『表示するフレームの時刻』で行う（書き出しと同じ）
+    check("プレビュー: 範囲の開始が、要求時刻より前でも『表示フレームの時刻』より後なら掛けない(書き出しと同じ判定)", changedIn(await pv([REG({ start: 4.95 })]), ...REGION_BOX) === 0 && changedIn(await pv([REG({ start: 4.88 })]), ...REGION_BOX) > 1000);
+    OffscreenCanvas.prototype.convertToBlob = origCTB;
+
+    // 入力検証
+    for (const [label, regions] of [["座標が NaN", [REG({ x: NaN })]], ["小さすぎる範囲", [REG({ w: 0.001 })]], ["終了が開始以前", [REG({ start: 3, end: 2 })]], ["101件", Array.from({ length: 101 }, () => REG())], ["配列でない", { a: 1 }], ["文字列の座標", [REG({ y: "0.5" })]]]) {
+      const bad = await send({ type: "export", file: FILE, quality: "standard", regions }); const be = bad.find((m) => m.type === "error");
+      check(`検証: 手動範囲が不正(${label})な export は拒否し、処理に入らない`, !!be && !bad.some((m) => m.type === "progress" || m.type === "done"), JSON.stringify(bad).slice(0, 100));
+    }
+    const badP = await send({ type: "preview", file: FILE, time: 1, id: 43, regions: [REG({ h: 0 })] }); check("検証: 手動範囲が不正な preview も拒否", badP[0].type === "error");
+    check("検証後も続けて出力できる", types(await send({ type: "export", file: FILE, quality: "standard" })).includes("done"));
+
+    // ★ 検出エラーのフレームでも、顔が漏れない（直前までの追跡位置でモザイクを継続）
+    P.calls = 0; P.failEvery = 3; ms = await send({ type: "export", file: FILE, quality: "standard", regions: [REG({ start: 0 })] }); P.failEvery = 0;
+    const o5 = st.lastConversion.outs; const faceMosaic = o5.map((o) => changedIn(o.lastPut, 240, 80, 372, 215)), manual5 = o5.map((o) => changedIn(o.lastPut, ...REGION_BOX));
+    const d5 = ms.find((m) => m.type === "done");
+    check(`★検出が3フレームに1回失敗しても、全フレームで顔にモザイクが掛かる(顔が漏れない: 最小 ${Math.min(...faceMosaic)}画素)・手動範囲も全フレームで掛かる`, d5 && d5.frames === 30 && faceMosaic.every((n) => n > 2000) && manual5.every((n) => n > 1000), `${faceMosaic.join()} | ${manual5.join()}`);
+    check("検出失敗の警告は、実際の挙動(追跡位置でモザイクを継続)を説明している", d5.warnings.some((w) => w.includes("10フレーム") && w.includes("継続")), JSON.stringify(d5.warnings));
+  }
+
+  st.recordOutputs = false; st.lastConversion.outs = null;
+
   // ---- キャンセル・排他 ----
   st.execDelay = 25; st.frames = 200;
   const running = send({ type: "export", file: FILE, quality: "standard" });

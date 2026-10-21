@@ -1,7 +1,7 @@
 // テスト用の偽 Mediabunny（worker.js の処理フローを検証するため。実物の API 形状に合わせている）
 export const ALL_FORMATS = ["mp4"]; export const QUALITY_HIGH = { q: "high" };
 export const state = { duration: 10, frames: 30, hasAudio: true, decodable: true, encodable: { avc: true, hevc: true, vp9: true, av1: true },
-  inputError: null, noVideo: false, discarded: [], execDelay: 0, lastConversion: null, initError: null, width: 640, height: 360, lastCanEncode: [], previewSamples: 14 };
+  inputError: null, noVideo: false, discarded: [], execDelay: 0, lastConversion: null, initError: null, recordOutputs: false, width: 640, height: 360, lastCanEncode: [], previewSamples: 14 };
 export class BlobSource { constructor(blob) { this.blob = blob; } }
 export class ConversionCanceledError extends Error {}
 class Track { constructor() { this.displayWidth = state.width; this.displayHeight = state.height; this.rotation = 0; this.codec = "avc"; this.type = "video"; }
@@ -28,7 +28,7 @@ export const Conversion = { async init(opts) {
       for (let i = 0; i < n; i++) {
         if (canceled) throw new ConversionCanceledError("canceled");
         const out = await opts.video.process(new Sample(i / 30));
-        conv.outputs = (conv.outputs || 0) + 1; conv.lastOut = out;
+        conv.outputs = (conv.outputs || 0) + 1; conv.lastOut = out; if (state.recordOutputs) (conv.outs ||= []).push(out);
         if (conv.onProgress) conv.onProgress((i + 1) / n, i / 30);
         if (state.execDelay) await new Promise((r) => setTimeout(r, state.execDelay));
       }

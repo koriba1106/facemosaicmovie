@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """変異テスト: プロジェクトを複製し、故意にバグ・脆弱性を1つずつ仕込んで、該当するテストが失敗する（=検出できる）ことを確認する。
    「テストが通る」ことではなく「テストが問題を見つけられる」ことの確認。1つでも見逃しがあれば終了コード1。
-   使い方: python3 tests/mutation_check.py        （Node.js と jsdom が必要。約5〜10分）"""
+   使い方: python3 tests/mutation_check.py              （Node.js と jsdom が必要。約15〜20分）
+           python3 tests/mutation_check.py --from 73    （途中から再開。中断した場合など）"""
 import os, shutil, subprocess, sys, tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV = dict(os.environ)
@@ -96,8 +97,36 @@ m("画面: フレーム検査を無効化", sub("js/app.js", "if (FMCore.isFrame
 m("診断: CSP の実効確認を外す", sub("js/selfcheck.js", 'dir && String(dir).startsWith("connect-src")', "true"), "test_selfcheck_jsdom.js")
 m("診断: 整合性の照合を外す", sub("js/selfcheck.js", "else if ((await sha256Hex(buf)) !== meta.sha256) bad.push(", "else if (false) bad.push("), "test_selfcheck_jsdom.js")
 
+# --- 手動モザイク ---
+m("手動: 開始の判定を『以降』から『より後』に", sub("js/core.js", "t >= r.start - C.REGION_EPS", "t > r.start"), "test_manual.js")
+m("手動: 開始の時刻誤差の許容をなくす", sub("js/core.js", "t >= r.start - C.REGION_EPS", "t >= r.start"), "test_manual.js")
+m("手動: 終了の判定を『未満』から『以下』に", sub("js/core.js", "t < r.end - C.REGION_EPS", "t <= r.end"), "test_manual.js")
+m("手動: 範囲の最小サイズの検証を外す", sub("js/core.js", "if (w < C.REGION_MIN_SIZE || h < C.REGION_MIN_SIZE) throw", "if (false) throw"), "test_manual.js")
+m("手動: 件数の上限の検証を外す", sub("js/core.js", "if (list.length > C.MAX_REGIONS) throw", "if (false) throw"), "test_manual.js")
+m("手動: 終了が開始以前の検証を外す", sub("js/core.js", "if (end <= start) throw", "if (false) throw"), "test_manual.js")
+m("手動: 座標の丸めを外す(範囲が1画素広がる)", sub("js/core.js", "const q = (v) => Math.round(v * 1e6) / 1e6;", "const q = (v) => v;"), "test_manual.js")
+m("手動: preview の範囲を検証せずに通す", sub("js/core.js", "out.regions = sanitizeRegions(msg.regions);\n        return out;\n      case \"export\":", "out.regions = msg.regions || [];\n        return out;\n      case \"export\":"), "test_manual.js")
+m("手動: renderCurrent が内部画像を書き換える(clone は共有)", sub("js/pipeline.js", "const tmp = new this.cv.Mat();\n      this.rgba.copyTo(tmp);", "const tmp = this.rgba.clone();"), "test_manual.js", G)
+m("検出エラーを再スロー(エラーのフレームで顔が漏れる)", sub("js/pipeline.js", "try { dets = this._detect(maxDim); } catch (e) { detectError = e; }", "dets = this._detect(maxDim);"), "test_manual.js", G)
+m("手動: processFrame で手動範囲を掛けない", sub("js/pipeline.js", "this.core.applyManualRects(this.cv, this.rgba, manualRects);", ""), "test_manual.js", G)
+m("手動: 書き出しで範囲を使わない", sub("js/worker.js", "FMCore.activeRegions(regions, sample.timestamp).map(", "[].map("), "test_worker.js", G)
+m("手動: プレビューが要求時刻で判定(書き出しとずれる)", sub("js/worker.js", "FMCore.activeRegions(regions, lastTs)", "FMCore.activeRegions(regions, t)"), "test_worker.js", G)
+m("手動(画面): 開始がスライダーの時刻(表示フレームの時刻でない)", sub("js/app.js", "Math.min(S.frameTime, Math.max(0, dur - 0.01))", "Math.min(parseFloat(el.slider.value) || 0, Math.max(0, dur - 0.01))"), "test_ui_jsdom.js")
+m("手動(画面): 継続の最小値の補正を外す", sub("js/app.js", "Math.max(0.1, Math.min(v, C.MAX_EXPORT_SECONDS))", "Math.min(v, C.MAX_EXPORT_SECONDS)"), "test_ui_jsdom.js")
+m("手動(画面): 終了=開始+継続 を誤る", sub("js/app.js", "end: r.duration === null ? null : r.start + r.duration", "end: r.duration === null ? null : r.duration"), "test_ui_jsdom.js")
+m("手動(画面): 小さいドラッグの無視をやめる", sub("js/app.js", "const tooSmall = d.w * p.cssW < 8", "const tooSmall = false && d.w * p.cssW < 8"), "test_ui_jsdom.js")
+m("手動(画面): 枠外へのドラッグを 0〜1 に収めない", sub("js/app.js", "x: clamp01((ev.clientX - r.left) / w), y: clamp01((ev.clientY - r.top) / h),", "x: (ev.clientX - r.left) / w, y: (ev.clientY - r.top) / h,"), "test_ui_jsdom.js")
+m("手動(画面): 別の動画でも範囲が残る", sub("js/app.js", "S.regions = []; S.drag = null; S.frameTime = 0; renderRegionList();", "S.drag = null; S.frameTime = 0;"), "test_ui_jsdom.js")
+m("手動(画面): 書き出しに範囲を渡さない", sub("js/app.js", "quality: el.quality.value, accuracy: el.accuracy.value, regions: wireRegions() }", "quality: el.quality.value, accuracy: el.accuracy.value }"), "test_ui_jsdom.js")
+m("手動(画面): プレビューに範囲を渡さない", sub("js/app.js", "id: S.previewId, regions: wireRegions() }", "id: S.previewId }"), "test_ui_jsdom.js")
+m("手動(画面): 処理中も範囲の入力を無効にしない", sub("js/app.js", 'el.regionList.querySelectorAll("input,button").forEach((x) => { x.disabled = S.processing; });', ""), "test_ui_jsdom.js")
+m("手動(画面): 処理中のドラッグを許す", sub("js/app.js", "const canDraw = () => !!S.file && !S.processing && ", "const canDraw = () => !!S.file && "), "test_ui_jsdom.js")
+m("手動(画面): 上限(100件)の確認を外す", sub("js/app.js", "if (S.regions.length >= C.MAX_REGIONS) return showBanner", "if (false) return showBanner"), "test_ui_jsdom.js")
+
 missed = []
+START = int(sys.argv[sys.argv.index("--from") + 1]) if "--from" in sys.argv else 1
 for i, (name, fn, test, flags) in enumerate(M, 1):
+    if i < START: continue
     d = os.path.join(WORK, f"m{i}")
     shutil.copytree(BASE, d)
     try:
@@ -110,5 +139,5 @@ for i, (name, fn, test, flags) in enumerate(M, 1):
     if not caught: missed.append(name)
     shutil.rmtree(d, ignore_errors=True)
 shutil.rmtree(WORK, ignore_errors=True)
-print(f"\n変異 {len(M)} 種類のうち、検出 {len(M) - len(missed)} / 見逃し {len(missed)}")
+print(f"\n変異 {len(M) - START + 1} 種類（{START}〜{len(M)}番）のうち、検出 {len(M) - START + 1 - len(missed)} / 見逃し {len(missed)}")
 sys.exit(1 if missed else 0)

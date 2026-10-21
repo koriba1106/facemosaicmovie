@@ -14,7 +14,7 @@ const check = (name, ok, detail) => { ok ? passes++ : fails++; console.log((ok ?
 async function until(fn, ms = 4000) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await fn()) return true; await sleep(15); } return false; }
 
 function boot({ modelStatus = 200, modelSize = MODEL_SIZE, noWebCodecs = false, secure = true, framed = false, framedThrows = false } = {}) {
-  const log = { sent: [], workers: [], intervals: [], clicks: [], terminated: 0, unloadPrevented: 0 };
+  const log = { sent: [], workers: [], intervals: [], clicks: [], terminated: 0, unloadPrevented: 0, ctx: [] };
   let clock = 0;
   const html = framed ? HTML.replace('<script>/* FaceMosaic Browser - app.js', '<script>FMCore.isFramed = () => true;</script><script>/* FaceMosaic Browser - app.js') : HTML;
   const dom = new JSDOM(html, { url: "https://fm.test/", runScripts: "dangerously", pretendToBeVisual: true, beforeParse(w) {
@@ -23,7 +23,9 @@ function boot({ modelStatus = 200, modelSize = MODEL_SIZE, noWebCodecs = false, 
     w.OffscreenCanvas = function () {};
     if (!noWebCodecs) { w.VideoEncoder = function () {}; w.VideoDecoder = function () {}; }
     w.HTMLMediaElement.prototype.load = () => {};
-    w.HTMLCanvasElement.prototype.getContext = function () { return { drawImage() {} }; };
+    const ctxProxy = new Proxy({}, { get(_, name) { return (...a) => { log.ctx.push([String(name), ...a]); }; }, set(_, k, v) { log.ctx.push(["set:" + String(k), v]); return true; } });
+    w.HTMLCanvasElement.prototype.getContext = function () { return ctxProxy; };
+    w.HTMLCanvasElement.prototype.getBoundingClientRect = function () { return { left: 0, top: 0, width: 640, height: 360, right: 640, bottom: 360 }; };
     w.createImageBitmap = async () => ({ width: 640, height: 360, close() {} });
     w.HTMLAnchorElement.prototype.click = function () { log.clicks.push({ href: this.href, download: this.download, inDom: this.isConnected }); };
     w.fetch = async (u, o) => { log.fetchArgs = [u, o]; return modelStatus === 200 ? { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(modelSize) } : { ok: false, status: modelStatus }; };
@@ -43,7 +45,7 @@ function boot({ modelStatus = 200, modelSize = MODEL_SIZE, noWebCodecs = false, 
           if (n.includes("hang")) return;                                    // 応答しない
           return this.emit({ type: "inspected", id: m.id, info: { width: 1280, height: 720, duration: 12.5, codec: n.includes("hevc") ? "hevc" : "avc", hasAudio: !n.includes("silent"), decodable: !n.includes("nodecode") } });
         }
-        if (m.type === "preview") return setTimeout(() => this.emit({ type: "preview", id: m.id, blob: new w.Blob(["jpg"]), frames: 12 }), 40);
+        if (m.type === "preview") return setTimeout(() => this.emit({ type: "preview", id: m.id, blob: new w.Blob(["jpg"]), frames: 12, frameTime: Math.max(0, m.time - 0.0123) }), 40);
         if (m.type === "export") {
           this.canceled = false;
           if (m.file.name.includes("exportfail")) return this.emit({ type: "error", for: "export", message: "メモリ不足です" });
@@ -51,7 +53,7 @@ function boot({ modelStatus = 200, modelSize = MODEL_SIZE, noWebCodecs = false, 
           let v = 3; const tick = () => {
             if (this.canceled) return this.emit({ type: "canceled" });
             if (m.file.name.includes("crash") && v > 30) { return this.onerror && this.onerror({ message: "out of memory" }); }
-            if (v >= 97) return this.emit({ type: "done", buffer: new ArrayBuffer(250000), codec: m.quality === "compact" ? "hevc" : "avc", frames: 375, size: 250000, ratioPct: m.quality === "compact" ? 38.5 : 71.2, warnings: m.file.name.includes("warn") ? ["音声トラックを出力に含められませんでした（undecodable_source_codec）。映像のみで出力します。"] : [], hasAudio: true });
+            if (v >= 97) return this.emit({ type: "done", buffer: new ArrayBuffer(250000), codec: m.quality === "compact" ? "hevc" : "avc", frames: 375, size: 250000, ratioPct: m.quality === "compact" ? 38.5 : 71.2, manualCount: (m.regions || []).length, warnings: m.file.name.includes("warn") ? ["音声トラックを出力に含められませんでした（undecodable_source_codec）。映像のみで出力します。"] : [], hasAudio: true });
             this.emit({ type: "progress", value: v, text: `顔検出・モザイク処理中… ${Math.round(v * 3.9)}フレーム処理済み / 残り約2分` }); v += 17; setTimeout(tick, 60);
           }; tick(); return;
         }
@@ -187,6 +189,121 @@ const banner = (t) => t.$("banner");
   check("localStorage・sessionStorage・Cookie を使っていない(動画に関する情報を端末に残さない)", t.w.localStorage.length === 0 && t.w.sessionStorage.length === 0 && t.d.cookie === "");
   check("処理中に画面を離れようとすると確認が出る(beforeunload)", await (async () => { t.pick(t.mkFile("a.mp4")); await until(() => !t.$("exportBtn").disabled); t.$("exportBtn").click(); const ev = new t.w.Event("beforeunload", { cancelable: true }); t.w.dispatchEvent(ev); return ev.defaultPrevented; })());
   await until(() => !t.$("result").hidden);
+
+
+  // ================= 手動モザイク（範囲指定） =================
+  t = boot(); await until(() => !t.$("fileInput").disabled);
+  const cv_ = () => t.$("previewCanvas");
+  const ptr = (type, x, y, extra = {}) => { const ev = new t.w.MouseEvent(type, { clientX: x, clientY: y, bubbles: true, cancelable: true, button: 0, ...extra }); Object.defineProperty(ev, "pointerId", { value: 1 }); cv_().dispatchEvent(ev); return ev; };
+  const drag = (x0, y0, x1, y1) => { ptr("pointerdown", x0, y0); ptr("pointermove", (x0 + x1) / 2, (y0 + y1) / 2); ptr("pointerup", x1, y1); };
+  const items = () => [...t.d.querySelectorAll("#regionList .region-item")];
+  const lastPreview = () => t.sent("preview").at(-1);
+  const near = (a, b, e = 1e-6) => Math.abs(a - b) < e;
+
+  ptr("pointerdown", 10, 10); ptr("pointerup", 200, 200);
+  check("動画を選ぶ前は、ドラッグしても範囲は作られない", items().length === 0 && t.$("regionEmpty").hidden === false && t.$("clearRegionsBtn").disabled);
+  t.pick(t.mkFile("manual.mp4")); await until(() => !t.$("previewCanvas").hidden);
+  check("初期状態: 範囲なし・『範囲はまだありません』・すべて削除は無効。最初のプレビューは regions=[] を送る", items().length === 0 && !t.$("regionEmpty").hidden && t.$("clearRegionsBtn").disabled && Array.isArray(t.sent("preview")[0].regions) && t.sent("preview")[0].regions.length === 0);
+
+  // 6秒の位置へ移動してからドラッグ
+  t.$("slider").value = "6"; t.$("slider").dispatchEvent(new t.w.Event("input")); await sleep(300);
+  check("プレビューのフレーム時刻(frameTime)を受け取って保持する(要求6秒 → 表示は 5.9877秒)", near(lastPreview().time, 6));
+  drag(64, 36, 192, 144);
+  check("プレビュー上のドラッグで範囲が1件でき、一覧に表示される", items().length === 1 && !t.$("regionEmpty").hidden === false && !t.$("clearRegionsBtn").disabled, items().length);
+  await sleep(300);
+  let reg = lastPreview().regions;
+  check("範囲は『画面に対する割合』で保存され(x=0.1,y=0.1,w=0.2,h=0.3)、開始は表示中フレームの時刻(5.9877)、終了は null(最後まで)", reg.length === 1 && near(reg[0].x, 0.1) && near(reg[0].y, 0.1) && near(reg[0].w, 0.2) && near(reg[0].h, 0.3) && near(reg[0].start, 5.9877, 1e-9) && reg[0].end === null, JSON.stringify(reg));
+  check("範囲を作ると、プレビューが再要求される(モザイクを反映した画像を見られる)", lastPreview().regions.length === 1);
+  const strokes = () => t.log.ctx.filter((c) => c[0] === "strokeRect");
+  t.log.ctx.length = 0; t.$("slider").dispatchEvent(new t.w.Event("input")); await sleep(300);
+  check("プレビュー上に、有効な範囲の枠(点線)を重ねて描く", strokes().some((c) => near(c[1], 64) && near(c[2], 36) && near(c[3], 128) && near(c[4], 108)) && t.log.ctx.some((c) => c[0] === "setLineDash"), JSON.stringify(strokes()));
+  check("範囲の項目は、数値入力と固定の文言だけで作られる(HTML文字列を使わない)", items()[0].querySelectorAll("input[type=number]").length === 2 && !items()[0].innerHTML.includes("<script") && items()[0].querySelector(".region-summary").textContent.includes("最後まで"), items()[0].textContent);
+
+  // ドラッグの境界
+  const nBefore = items().length;
+  ptr("pointerdown", 300, 200); ptr("pointerup", 301, 201);
+  check("クリックだけ・数ピクセルのドラッグは範囲にならない", items().length === nBefore);
+  drag(300, 200, 300, 330);
+  check("幅が0の(縦線のような)ドラッグは範囲にならない", items().length === nBefore);
+  ptr("pointerdown", 100, 100, { button: 2 }); ptr("pointerup", 300, 300, { button: 2 });
+  check("右クリックでは範囲を作らない", items().length === nBefore);
+  drag(300, 200, 307, 300);
+  check("幅が約7px(8px未満)の細いドラッグは範囲にならない", items().length === nBefore);
+  drag(300, 200, 400, 206);
+  check("高さが約6px(8px未満)の低いドラッグも範囲にならない", items().length === nBefore);
+  ptr("pointerdown", 500, 250); ptr("pointermove", 900, 700); await sleep(80);
+  { const k = t.log.ctx.map((c, i) => (c[0] === "set:strokeStyle" && c[1] === "#ffffff" ? i : -1)).filter((i) => i >= 0).pop();
+    const sr = k === undefined ? null : t.log.ctx.slice(k).find((c) => c[0] === "strokeRect");
+    check("ドラッグ中の枠(白)は、枠の外へ引いても画面の内側に収まって描かれる", sr && sr[1] >= 0 && sr[2] >= 0 && sr[1] + sr[3] <= 640 + 1e-6 && sr[2] + sr[4] <= 360 + 1e-6, JSON.stringify(sr)); }
+  ptr("pointerup", 900, 700);
+  await sleep(300);
+  const rg = lastPreview().regions.at(-1);
+  check("枠の外までドラッグしても、画面の内側(0〜1)に収まる", items().length === nBefore + 1 && near(rg.x, 500 / 640) && near(rg.y, 250 / 360) && near(rg.x + rg.w, 1) && near(rg.y + rg.h, 1), JSON.stringify(rg));
+  drag(400, 300, 100, 50);
+  await sleep(300);
+  const rg2 = lastPreview().regions.at(-1);
+  check("右下から左上へのドラッグでも、正しい範囲(x,yは小さい側)になる", near(rg2.x, 100 / 640) && near(rg2.y, 50 / 360) && near(rg2.w, 300 / 640) && near(rg2.h, 250 / 360), JSON.stringify(rg2));
+
+  // 継続秒数・開始の編集
+  const inputsOf = (i) => items()[i].querySelectorAll("input[type=number]");
+  const setVal = (input, v) => { input.value = v; input.dispatchEvent(new t.w.Event("change")); };
+  setVal(inputsOf(0)[1], "3"); await sleep(300);
+  reg = lastPreview().regions[0];
+  check("継続(秒)=3 を指定すると、終了=開始+3 になる(『解除』の指定)", near(reg.end, reg.start + 3, 1e-9) && items()[0].querySelector(".region-summary").textContent.includes("3.0秒間"), JSON.stringify(reg) + items()[0].querySelector(".region-summary").textContent);
+  setVal(inputsOf(0)[1], ""); await sleep(300);
+  check("継続を空にすると『最後まで』に戻る", lastPreview().regions[0].end === null && items()[0].querySelector(".region-summary").textContent.includes("最後まで"));
+  setVal(inputsOf(0)[1], "abc"); await sleep(200); check("数値でない継続は『最後まで』として扱う(エラーにしない)", lastPreview().regions[0].end === null);
+  setVal(inputsOf(0)[1], "0"); await sleep(200); check("継続は最小0.1秒に補正する(0秒や負の値で、無効な範囲を作らない)", near(lastPreview().regions[0].end - lastPreview().regions[0].start, 0.1, 1e-9));
+  setVal(inputsOf(0)[1], "-5"); await sleep(200); check("負の継続も0.1秒に補正", near(lastPreview().regions[0].end - lastPreview().regions[0].start, 0.1, 1e-9));
+  setVal(inputsOf(0)[1], "2.5"); setVal(inputsOf(0)[0], "8"); await sleep(300);
+  reg = lastPreview().regions[0];
+  check("開始を 8秒 に変更すると、継続(2.5秒)を保ったまま 8〜10.5秒 になる", near(reg.start, 8) && near(reg.end, 10.5), JSON.stringify(reg));
+  setVal(inputsOf(0)[0], "999"); await sleep(200);
+  check("開始が動画の長さ(12.5秒)を超える値は、末尾の手前に補正する", lastPreview().regions[0].start <= 12.49 && lastPreview().regions[0].start >= 12.4, lastPreview().regions[0].start);
+  setVal(inputsOf(0)[0], "-3"); await sleep(200);
+  check("開始が負の値は 0 に補正", lastPreview().regions[0].start === 0);
+  setVal(inputsOf(0)[0], "xyz"); await sleep(200);
+  check("開始が数値でない場合は、元の値のまま(壊れた値を送らない)", Number.isFinite(lastPreview().regions[0].start));
+
+  // 枠が有効な時刻だけ描かれる
+  setVal(inputsOf(0)[0], "10"); setVal(inputsOf(0)[1], "1"); await sleep(300);
+  t.$("slider").value = "2"; t.log.ctx.length = 0; t.$("slider").dispatchEvent(new t.w.Event("input")); await sleep(350);
+  const firstStroke = (c) => strokes().filter((s) => near(s[1], 64) && near(s[2], 36));
+  check("範囲が有効でない時刻(開始前)のプレビューには、その範囲の枠を描かない", firstStroke().length === 0, JSON.stringify(strokes()));
+
+  // 移動ボタン・最後までボタン
+  items()[0].querySelectorAll("button")[0].click(); await sleep(100);
+  check("『この時刻へ移動』で、スライダーが範囲の開始時刻に移る", near(parseFloat(t.$("slider").value), 10) && t.$("timeLabel").textContent.startsWith("00:10"), t.$("slider").value);
+  setVal(inputsOf(0)[1], "1"); items()[0].querySelectorAll("button")[1].click(); await sleep(300);
+  check("『最後まで』ボタンで継続が空になり、終了が null に戻る", inputsOf(0)[1].value === "" && lastPreview().regions[0].end === null);
+
+  // 削除
+  const n0 = items().length; items()[1].querySelectorAll("button")[2].click(); await sleep(300);
+  check("『削除』で、その範囲だけが消え、プレビューに反映される", items().length === n0 - 1 && lastPreview().regions.length === n0 - 1 && items().map((li) => li.querySelector("strong").textContent).join() === Array.from({ length: n0 - 1 }, (_, i) => `範囲 ${i + 1}`).join());
+  t.w.confirm = () => false; t.$("clearRegionsBtn").click(); check("『すべて削除』で確認を断ると、何も消えない", items().length === n0 - 1);
+  t.w.confirm = () => true;
+
+  // 書き出し
+  t.$("exportBtn").click(); await sleep(30);
+  const ex = t.sent("export").at(-1);
+  check("書き出しの指示に、手動範囲(検証済みの割合・開始・終了)が含まれる", ex.regions.length === n0 - 1 && ex.regions.every((r) => r.x >= 0 && r.x + r.w <= 1.0000001 && r.y + r.h <= 1.0000001 && Number.isFinite(r.start)), JSON.stringify(ex.regions[0]));
+  check("処理中: 範囲の入力欄・ボタン・すべて削除が無効、ドラッグでも範囲は増えない", [...t.d.querySelectorAll("#regionList input, #regionList button")].every((x) => x.disabled) && t.$("clearRegionsBtn").disabled && (() => { const c = items().length; drag(20, 20, 200, 200); return items().length === c; })());
+  await until(() => !t.$("result").hidden);
+  check("完了の概要に、手動モザイクの件数を表示", t.$("resultSummary").textContent.includes(`手動モザイク${n0 - 1}件`), t.$("resultSummary").textContent);
+  check("完了後は範囲の編集が再び可能", [...t.d.querySelectorAll("#regionList input, #regionList button")].every((x) => !x.disabled) && !t.$("clearRegionsBtn").disabled);
+  t.$("clearRegionsBtn").click(); await sleep(300);
+  check("『すべて削除』(確認OK)で全て消え、プレビューは regions=[] で再要求される", items().length === 0 && !t.$("regionEmpty").hidden && lastPreview().regions.length === 0 && t.$("clearRegionsBtn").disabled);
+
+  // 上限・新しい動画での初期化
+  for (let i = 0; i < 100; i++) drag(10 + (i % 10) * 5, 10, 60 + (i % 10) * 5, 80);
+  check("範囲は100件まで作れる", items().length === 100, items().length);
+  drag(100, 100, 300, 300);
+  check("101件目は作らず、上限を案内する", items().length === 100 && banner(t).textContent.includes("最大100件"), banner(t).textContent);
+  await sleep(300);
+  check("100件でも、プレビュー・書き出しの指示は検証を通る(上限ちょうどは有効)", lastPreview().regions.length === 100);
+  t.pick(t.mkFile("another.mp4")); await until(() => !t.$("timeline").hidden && !t.$("previewCanvas").hidden); await sleep(200);
+  check("別の動画を選ぶと、前の動画の手動範囲は消える(別の動画に誤って掛けない)", items().length === 0 && t.sent("preview").at(-1).regions.length === 0 && !t.$("regionEmpty").hidden);
+  check("手動モザイクの操作で、JavaScriptエラーは発生しない", t.errors.length === 0, t.errors.join(" | "));
 
   // ================= ウォッチドッグ（処理が止まった場合） =================
   t = boot(); await until(() => !t.$("fileInput").disabled);

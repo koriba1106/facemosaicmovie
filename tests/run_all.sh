@@ -12,6 +12,7 @@ run "セキュリティ設定(CSP・禁止API・外部URL・整合性台帳・�
 run "Python実装との一致(dynamic検出ロジック/追跡/割当/モザイク/ビットレート)" node tests/test_parity.js
 run "本物のモデル×OpenCV.js: 実画像でPython(cv2)と同じ検出"                   node --expose-gc tests/test_realmodel.js
 run "パイプライン結合(実OpenCV.js・リーク検査)"                               node --expose-gc tests/test_pipeline.js
+run "手動モザイク(範囲指定): 検証・時刻・見た目・検出エラー時の継続・実モデル"      node --expose-gc tests/test_manual.js
 run "Worker処理フロー・入力検証(偽Mediabunny/YuNet)"                          node --expose-gc tests/test_worker.js
 run "画面ロジックとセキュリティ挙動(jsdom・偽Worker)"                          node tests/test_ui_jsdom.js
 run "診断ページ(jsdom)"                                                        node tests/test_selfcheck_jsdom.js
