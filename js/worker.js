@@ -115,7 +115,7 @@ function makeScratch(w, h) {
 }
 
 // ---------------------------------------------------------------- プレビュー
-async function handlePreview({ file, time, id, accuracy }) {
+async function handlePreview({ file, time, id, accuracy, regions }) {
   if (busy) { post({ type: "preview-skipped", id }); return; }
   requireReady();
   const { input, vtrack } = await openInput(file);
@@ -130,12 +130,13 @@ async function handlePreview({ file, time, id, accuracy }) {
     const t = Math.max(0, Math.min(time, Math.max(0, duration - 0.001)));
     const warmSec = 0.5;                                    // 約12〜15フレームの助走で追跡状態を作る
     const dim = FMCore.detectDim(accuracy, true);
-    let count = 0;
+    let count = 0, lastTs = t;                              // lastTs: 実際に表示するフレームの時刻（手動範囲の判定に使う）
 
     for await (const sample of sink.samples(Math.max(0, t - warmSec), t + 0.0005)) {
       try {
         const img = sampleToRgba(sample, scratch, W, H);
         pipe.processFrame(img.data, W, H, dim, false);      // 助走: 追跡のみ更新
+        lastTs = sample.timestamp;
         count++;
       } finally {
         sample.close();
@@ -147,9 +148,12 @@ async function handlePreview({ file, time, id, accuracy }) {
       try {
         const img = sampleToRgba(s, scratch, W, H);
         pipe.processFrame(img.data, W, H, dim, false);
+        lastTs = s.timestamp;
       } finally { s.close(); }
     }
-    const out = pipe.renderCurrent();                       // 最終フレームのみモザイクを適用して取り出す
+    // 最終フレームのみ、顔モザイクと、そのフレームの時刻に有効な手動範囲のモザイクを適用して取り出す
+    const rects = FMCore.activeRegions(regions, lastTs).map((r) => FMCore.regionToRect(r, W, H));
+    const out = pipe.renderCurrent(rects);
 
     const outCanvas = new OffscreenCanvas(W, H);
     outCanvas.getContext("2d").putImageData(new ImageData(out, W, H), 0, 0);
@@ -160,7 +164,7 @@ async function handlePreview({ file, time, id, accuracy }) {
       blobCanvas.getContext("2d").drawImage(outCanvas, 0, 0, blobCanvas.width, blobCanvas.height);
     }
     const blob = await blobCanvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
-    post({ type: "preview", id, blob, frames: count });
+    post({ type: "preview", id, blob, frames: count, frameTime: lastTs });
   } finally {
     if (pipe) pipe.dispose();
     input.dispose();
@@ -177,7 +181,7 @@ async function pickCodec(order, W, H, bitrate) {
   return null;
 }
 
-async function handleExport({ file, quality, maxSeconds, accuracy }) {
+async function handleExport({ file, quality, maxSeconds, accuracy, regions }) {
   if (busy) throw new Error("すでに処理中です。");
   requireReady();
   busy = true; cancelRequested = false;
@@ -211,13 +215,15 @@ async function handleExport({ file, quality, maxSeconds, accuracy }) {
       if (w * h > C.MAX_PIXELS) throw new Error("フレームの解像度が大きすぎます。");
       const sc = (w === scratch.w && h === scratch.h) ? scratch : makeScratch(w, h);
       const img = sampleToRgba(sample, sc, w, h);
-      try {
-        pipe.processFrame(img.data, w, h, dim, true);
-        consecutive = 0;
-      } catch (e) {
-        // 1フレームの検出失敗では止めない（追跡の予測で継続）。連続して失敗する場合は中止
+      // このフレームの時刻に有効な手動範囲（プレビューと同じ判定）
+      const rects = FMCore.activeRegions(regions, sample.timestamp).map((r) => FMCore.regionToRect(r, w, h));
+      const res = pipe.processFrame(img.data, w, h, dim, true, rects);
+      if (res.detectError) {
+        // 1フレームの検出失敗では止めない（追跡は予測位置で続き、モザイクも掛かる）。連続して失敗する場合は中止
         detectFailures++; consecutive++;
-        if (consecutive >= 30) throw new Error("顔検出が連続して失敗しました: " + errText(e));
+        if (consecutive >= 30) throw new Error("顔検出が連続して失敗しました: " + errText(res.detectError));
+      } else {
+        consecutive = 0;
       }
       frames++;
       const out = new OffscreenCanvas(w, h);                // 返却用は毎回新規（エンコーダが保持しても安全）
@@ -267,9 +273,9 @@ async function handleExport({ file, quality, maxSeconds, accuracy }) {
 
     const buffer = output.target.buffer;
     if (!buffer || buffer.byteLength === 0) throw new Error("出力ファイルを生成できませんでした。");
-    if (detectFailures > 0) warnings.push(`${detectFailures}フレームで顔検出に失敗しました（前後のフレームの位置で補完）。`);
+    if (detectFailures > 0) warnings.push(`${detectFailures}フレームで顔検出に失敗しました（直前までの追跡位置でモザイクを継続）。`);
     post({
-      type: "done", buffer, codec, frames,
+      type: "done", buffer, codec, frames, manualCount: regions.length,
       size: buffer.byteLength, ratioPct: Math.round((buffer.byteLength / Math.max(1, file.size)) * 1000) / 10,
       warnings, hasAudio: !(warnings.some((w) => w.startsWith("音声"))),
     }, [buffer]);

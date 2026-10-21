@@ -154,34 +154,48 @@
 
     /**
      * 1フレームを処理する。
+     * 検出が例外になったフレームも、「検出なし」として追跡を進める（既存のトラックは予測位置で継続し、
+     * モザイクも掛かる）。顔が映ったまま出力されるのを防ぐため。例外は detectError として返す。
      * @param {Uint8ClampedArray|Uint8Array} rgbaBytes  w*h*4 の画素（mosaic=true の場合は結果が書き戻される）
      * @param {boolean} mosaic  false なら検出と追跡の更新のみ（プレビューの助走フレーム用）
-     * @returns {{faces: number, tracks: number}}
+     * @param {number[][]} manualRects  手動モザイクの範囲（画素座標 [x1,y1,x2,y2]）。顔モザイクの後に重ねる
+     * @returns {{faces: number, tracks: number, detectError: (Error|null)}}
      */
-    processFrame(rgbaBytes, w, h, maxDim, mosaic = true) {
+    processFrame(rgbaBytes, w, h, maxDim, mosaic = true, manualRects = []) {
       if (!(w > 0 && h > 0) || rgbaBytes.length < w * h * 4) throw new Error("フレームのサイズが不正です。");
       this._ensure(w, h);
       this.rgba.data.set(rgbaBytes.subarray ? rgbaBytes.subarray(0, w * h * 4) : rgbaBytes);
 
-      const dets = this._detect(maxDim);
+      let dets = [], detectError = null;
+      try { dets = this._detect(maxDim); } catch (e) { detectError = e; }
       const r = this.core.updateTracksPool(this.tracks, dets, this.nextId, true);
       this.tracks = r.tracks; this.nextId = r.nextId;
 
       if (mosaic) {
         this.core.applyMosaic(this.cv, this.rgba, this.tracks);
+        this.core.applyManualRects(this.cv, this.rgba, manualRects);
         rgbaBytes.set(this.rgba.data);
       }
-      return { faces: dets.length, tracks: this.tracks.length };
+      return { faces: dets.length, tracks: this.tracks.length, detectError };
     }
 
     /**
-     * 直近に processFrame したフレームへ、現在の確定トラックのモザイクを適用し、画素(コピー)を返す。
+     * 直近に processFrame したフレームへ、現在の確定トラックと手動範囲のモザイクを適用し、画素(コピー)を返す。
      * プレビューの最終フレーム用（助走フレームは mosaic=false で流し、最後だけここで適用する）。
      */
-    renderCurrent() {
+    renderCurrent(manualRects = []) {
       if (!this.rgba) throw new Error("処理済みフレームがありません。");
-      this.core.applyMosaic(this.cv, this.rgba, this.tracks);
-      return new Uint8ClampedArray(this.rgba.data);
+      // 内部の画像は書き換えない（何度呼んでも同じ結果）。
+      // 注意: OpenCV.js 5.0 の Mat.clone() は深いコピーではなくデータを共有するため、copyTo を使う。
+      const tmp = new this.cv.Mat();
+      this.rgba.copyTo(tmp);
+      try {
+        this.core.applyMosaic(this.cv, tmp, this.tracks);
+        this.core.applyManualRects(this.cv, tmp, manualRects);
+        return new Uint8ClampedArray(tmp.data);
+      } finally {
+        tmp.delete();
+      }
     }
 
     dispose() {

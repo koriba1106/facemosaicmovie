@@ -66,6 +66,11 @@
     MAX_FILE_BYTES: 4 * 1024 ** 3,
     WARN_FILE_BYTES: 1024 ** 3,
     MAX_EXPORT_SECONDS: 6 * 3600,
+
+    // ★ 手動モザイク（顔検出に頼らず、指定した範囲を固定で隠す）
+    MAX_REGIONS: 100,
+    REGION_MIN_SIZE: 0.01,            // 画面に対する割合（1%）。これより小さい範囲は作らない
+    REGION_EPS: 0.0005,               // 時刻の比較の許容（秒）。デコード経路による浮動小数点の誤差を吸収する
   };
 
   // ===== 数値ユーティリティ =====
@@ -442,6 +447,59 @@
     }
   }
 
+  // ===== ★ 手動モザイク =====
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+
+  /**
+   * 手動範囲を検証して、正規化した値を返す（不正なら例外）。
+   * x,y,w,h は画面全体に対する割合(0〜1)。start/end は秒（end が null なら動画の最後まで）。
+   */
+  function sanitizeRegion(r) {
+    if (!r || typeof r !== "object") throw new Error("手動モザイクの範囲が不正です。");
+    const nums = [r.x, r.y, r.w, r.h, r.start];
+    if (!nums.every(isFiniteNumber)) throw new Error("手動モザイクの範囲(座標・時刻)が不正です。");
+    if (r.end !== null && r.end !== undefined && !isFiniteNumber(r.end)) throw new Error("手動モザイクの終了時刻が不正です。");
+    const x = clamp01(r.x), y = clamp01(r.y);
+    const w = Math.min(clamp01(r.w), 1 - x), h = Math.min(clamp01(r.h), 1 - y);
+    if (w < C.REGION_MIN_SIZE || h < C.REGION_MIN_SIZE) throw new Error("手動モザイクの範囲が小さすぎます。");
+    const start = clamp(r.start, 0, C.MAX_EXPORT_SECONDS);
+    let end = null;
+    if (r.end !== null && r.end !== undefined) {
+      end = clamp(r.end, 0, C.MAX_EXPORT_SECONDS);
+      if (end <= start) throw new Error("手動モザイクの終了時刻は、開始より後にしてください。");
+    }
+    return { x, y, w, h, start, end };
+  }
+
+  /** 配列全体を検証する。未指定は空配列。個数にも上限がある */
+  function sanitizeRegions(list) {
+    if (list === undefined || list === null) return [];
+    if (!Array.isArray(list)) throw new Error("手動モザイクの指定が不正です。");
+    if (list.length > C.MAX_REGIONS) throw new Error(`手動モザイクは最大${C.MAX_REGIONS}件までです。`);
+    return list.map(sanitizeRegion);
+  }
+
+  /** 時刻 t（秒）に有効な範囲だけを返す。開始の瞬間を含み、終了の瞬間は含まない */
+  function activeRegions(regions, t) {
+    return regions.filter((r) => t >= r.start - C.REGION_EPS && (r.end === null || t < r.end - C.REGION_EPS));
+  }
+
+  /** 割合の範囲を、フレームの画素座標 [x1,y1,x2,y2] にする */
+  function regionToRect(r, w, h) {
+    // 浮動小数点の誤差（216.00000000000003 など）で、切り上げ時に範囲が1画素広がらないよう、小数6桁に丸める
+    const q = (v) => Math.round(v * 1e6) / 1e6;
+    return [q(r.x * w), q(r.y * h), q((r.x + r.w) * w), q((r.y + r.h) * h)];
+  }
+
+  /**
+   * 手動範囲にモザイクをかける。顔のモザイクと同じ関数（applyMosaic）を通すので、強さ・ブロックの大きさは同じ。
+   * rects: 画素座標 [x1,y1,x2,y2] の配列
+   */
+  function applyManualRects(cv, mat, rects) {
+    if (!rects || !rects.length) return;
+    applyMosaic(cv, mat, rects.map((box) => ({ confirmed: true, getRenderBox: () => box })));
+  }
+
   // ===== ビットレート（軽量モード） =====
   function calculateCompactBitrate(inputFileSize, duration) {
     if (duration <= 0 || inputFileSize <= 0) return 800000;
@@ -538,6 +596,7 @@
         out.file = msg.file;
         out.time = clamp(msg.time, 0, C.MAX_EXPORT_SECONDS);
         out.accuracy = ACCURACIES.includes(msg.accuracy) ? msg.accuracy : "high";
+        out.regions = sanitizeRegions(msg.regions);
         return out;
       case "export":
         if (!isBlobLike(msg.file)) throw new Error("動画ファイルが不正です。");
@@ -545,6 +604,7 @@
         out.file = msg.file;
         out.quality = msg.quality;
         out.accuracy = ACCURACIES.includes(msg.accuracy) ? msg.accuracy : "high";
+        out.regions = sanitizeRegions(msg.regions);
         if (msg.maxSeconds !== undefined) {
           if (!isFiniteNumber(msg.maxSeconds) || msg.maxSeconds <= 0 || msg.maxSeconds > 3600) throw new Error("処理秒数の指定が不正です。");
           out.maxSeconds = msg.maxSeconds;
@@ -568,6 +628,7 @@
     updateTracksPool, validateFaceLandmarks, detectionSize, detectDim,
     extractDynamicCandidates, mergeFaceCandidates, detectDynamicLogic,
     applyMosaic, calculateCompactBitrate,
+    sanitizeRegion, sanitizeRegions, activeRegions, regionToRect, applyManualRects,
     sanitizeName, safeBaseName, formatDuration, estimateRemaining, validateRequest, isBlobLike, isFramed,
   };
 });

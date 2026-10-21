@@ -39,6 +39,7 @@
     exportBtn: $("exportBtn"), cancelBtn: $("cancelBtn"), progress: $("progress"), blocks: $("blocks"),
     progText: $("progText"), progPct: $("progPct"), result: $("result"), resultVideo: $("resultVideo"),
     resultSummary: $("resultSummary"), resultWarn: $("resultWarn"), downloadBtn: $("downloadBtn"),
+    regionList: $("regionList"), regionEmpty: $("regionEmpty"), clearRegionsBtn: $("clearRegionsBtn"),
   };
 
   const S = {
@@ -51,6 +52,11 @@
     waiters: new Map(),
     outputName: "video",
     downloadName: "video_mosaic.mp4",
+    regions: [], nextRegionId: 1,   // 手動モザイクの範囲 {id,x,y,w,h,start,duration}（x,y,w,h は画面に対する割合）
+    frameTime: 0,                   // いま表示しているプレビューのフレームの時刻（秒）
+    lastBitmap: null,               // 表示中のプレビュー画像（範囲の枠を重ねて描き直すため保持）
+    drag: null,                     // ドラッグ中の範囲
+    paintQueued: false,
   };
 
   // ---------------------------------------------------------------- 進捗ブロック
@@ -69,6 +75,8 @@
     const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60, p = (v) => String(v).padStart(2, "0");
     return h ? `${p(h)}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
   }
+  /** 0.1秒単位の時刻（手動モザイクの表示用） */
+  const fmtTenths = (sec) => { sec = Math.max(0, sec || 0); const m = Math.floor(sec / 60), s = sec - m * 60; return `${String(m).padStart(2, "0")}:${s.toFixed(1).padStart(4, "0")}`; };
   const fmtSize = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB");
 
   /** kind: "error"（既定）| "info" | "warn"。本文は必ず textContent で入れる */
@@ -98,6 +106,8 @@
     el.accuracy.disabled = S.processing;
     el.slider.disabled = S.processing;
     el.changeBtn.disabled = !canPick;
+    el.clearRegionsBtn.disabled = S.processing || S.regions.length === 0;
+    el.regionList.querySelectorAll("input,button").forEach((x) => { x.disabled = S.processing; });
     if (ready) el.dropTitle.textContent = "動画をここにドロップ、またはクリックして選択";
     else if (S.engine === "need-model") el.dropTitle.textContent = "顔認識モデルを読み込めません";
     else if (S.engine === "failed") el.dropTitle.textContent = "エンジンを起動できません";
@@ -354,7 +364,7 @@
     S.previewId = S.nextId++;
     S.lastActivity = Date.now();
     try {
-      send({ type: "preview", file: S.file, time: parseFloat(el.slider.value) || 0, accuracy: el.accuracy.value, id: S.previewId });
+      send({ type: "preview", file: S.file, time: parseFloat(el.slider.value) || 0, accuracy: el.accuracy.value, id: S.previewId, regions: wireRegions() });
     } catch (e) {
       S.previewInFlight = false;
       showBanner(e.message);
@@ -363,24 +373,183 @@
 
   async function drawPreview(blob) {
     const bmp = await createImageBitmap(blob);
-    try {
-      el.canvas.width = bmp.width; el.canvas.height = bmp.height;
-      const ctx = el.canvas.getContext("2d");
-      if (!ctx) throw new Error("描画できません。");
-      ctx.drawImage(bmp, 0, 0);
-    } finally {
-      if (bmp.close) bmp.close();
-    }
+    if (S.lastBitmap && S.lastBitmap.close) S.lastBitmap.close();
+    S.lastBitmap = bmp;
+    paintPreview();
     el.canvas.hidden = false; el.empty.hidden = true;
+  }
+
+  /** プレビュー画像を描き、その時刻に有効な手動範囲の枠と、ドラッグ中の枠を重ねる */
+  function paintPreview() {
+    const bmp = S.lastBitmap;
+    if (!bmp) return;
+    if (el.canvas.width !== bmp.width || el.canvas.height !== bmp.height) { el.canvas.width = bmp.width; el.canvas.height = bmp.height; }
+    const ctx = el.canvas.getContext("2d");
+    if (!ctx) throw new Error("描画できません。");
+    ctx.drawImage(bmp, 0, 0);
+    const cw = el.canvas.width, ch = el.canvas.height;
+    ctx.save();
+    ctx.lineWidth = Math.max(2, Math.round(cw / 320));
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = "#f2b705"; ctx.fillStyle = "#f2b705";
+    ctx.font = `${Math.max(12, Math.round(cw / 40))}px sans-serif`;
+    const wires = S.regions.map(wireOf);
+    FMCore.activeRegions(wires, S.frameTime).forEach((w) => {
+      const idx = wires.indexOf(w);
+      ctx.strokeRect(w.x * cw, w.y * ch, w.w * cw, w.h * ch);
+      ctx.fillText(String(idx + 1), w.x * cw + 4, w.y * ch + Math.max(14, Math.round(cw / 36)));
+    });
+    if (S.drag) {
+      const d = dragRect();
+      ctx.strokeStyle = "#ffffff";
+      ctx.strokeRect(d.x * cw, d.y * ch, d.w * cw, d.h * ch);
+    }
+    ctx.restore();
+  }
+  function queuePaint() {
+    if (S.paintQueued) return;
+    S.paintQueued = true;
+    requestAnimationFrame(() => { S.paintQueued = false; try { paintPreview(); } catch (e) { /* 描画のみ */ } });
   }
 
   async function onPreview(m) {
     S.previewInFlight = false;
     if (m.id === S.previewId && S.file) {
+      S.frameTime = typeof m.frameTime === "number" && Number.isFinite(m.frameTime) ? m.frameTime : (parseFloat(el.slider.value) || 0);
       try { await drawPreview(m.blob); } catch (e) { showBanner("プレビューを表示できません。\n" + (e.message || e)); }
     }
     if (S.previewPending) pumpPreview();
   }
+
+  // ---------------------------------------------------------------- 手動モザイク（範囲指定）
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+  const durationOfVideo = () => (S.info ? S.info.duration : 0);
+
+  /** 画面の範囲(割合) + 開始 + 継続秒数 → Worker に渡す形（end が null なら最後まで） */
+  function wireOf(r) { return { x: r.x, y: r.y, w: r.w, h: r.h, start: r.start, end: r.duration === null ? null : r.start + r.duration }; }
+  /** 検証して Worker に渡す形にする。不正があれば例外（呼び出し側で表示） */
+  function wireRegions() { return FMCore.sanitizeRegions(S.regions.map(wireOf)); }
+
+  function dragRect() {
+    const d = S.drag;
+    return { x: Math.min(d.x0, d.x1), y: Math.min(d.y0, d.y1), w: Math.abs(d.x1 - d.x0), h: Math.abs(d.y1 - d.y0) };
+  }
+  function pointOnCanvas(ev) {
+    const r = el.canvas.getBoundingClientRect();
+    const w = r.width || 1, h = r.height || 1;
+    return { x: clamp01((ev.clientX - r.left) / w), y: clamp01((ev.clientY - r.top) / h), cssW: w, cssH: h };
+  }
+  const canDraw = () => !!S.file && !S.processing && !!S.lastBitmap && !el.canvas.hidden;
+
+  el.canvas.addEventListener("pointerdown", (ev) => {
+    if (!canDraw() || (ev.button !== undefined && ev.button !== 0)) return;
+    const p = pointOnCanvas(ev);
+    S.drag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+    try { if (el.canvas.setPointerCapture && ev.pointerId !== undefined) el.canvas.setPointerCapture(ev.pointerId); } catch (e) { /* 取得できなくても続行 */ }
+    ev.preventDefault();
+  });
+  el.canvas.addEventListener("pointermove", (ev) => {
+    if (!S.drag) return;
+    const p = pointOnCanvas(ev);
+    S.drag.x1 = p.x; S.drag.y1 = p.y;
+    queuePaint();
+  });
+  const endDrag = (ev, commit) => {
+    if (!S.drag) return;
+    const p = pointOnCanvas(ev);
+    S.drag.x1 = p.x; S.drag.y1 = p.y;
+    const d = dragRect();
+    S.drag = null;
+    const tooSmall = d.w * p.cssW < 8 || d.h * p.cssH < 8 || d.w < C.REGION_MIN_SIZE || d.h < C.REGION_MIN_SIZE;   // クリックだけ・ごく小さいドラッグは無視
+    if (commit && !tooSmall) addRegion(d);
+    queuePaint();
+  };
+  el.canvas.addEventListener("pointerup", (ev) => endDrag(ev, true));
+  el.canvas.addEventListener("pointercancel", (ev) => endDrag(ev, false));
+
+  function addRegion(rect) {
+    if (S.regions.length >= C.MAX_REGIONS) return showBanner(`手動モザイクは最大${C.MAX_REGIONS}件までです。`);
+    const dur = durationOfVideo();
+    const start = Math.max(0, Math.min(S.frameTime, Math.max(0, dur - 0.01)));       // 表示しているフレームの時刻から
+    S.regions.push({ id: S.nextRegionId++, x: rect.x, y: rect.y, w: Math.min(rect.w, 1 - rect.x), h: Math.min(rect.h, 1 - rect.y), start, duration: null });
+    hideBanner();
+    renderRegionList();
+    schedulePreview();
+  }
+
+  function schedulePreview() {
+    clearTimeout(S.previewTimer);
+    S.previewTimer = setTimeout(pumpPreview, 140);
+    queuePaint();
+  }
+
+  function regionSummaryText(r) {
+    return r.duration === null ? `${fmtTenths(r.start)} から 最後まで` : `${fmtTenths(r.start)} 〜 ${fmtTenths(r.start + r.duration)}（${r.duration.toFixed(1)}秒間）`;
+  }
+
+  function numberField(labelText, ariaLabel, attrs, value) {
+    const label = document.createElement("label");
+    label.append(labelText);
+    const input = document.createElement("input");
+    input.type = "number"; input.setAttribute("aria-label", ariaLabel);
+    for (const [k, v] of Object.entries(attrs)) input.setAttribute(k, String(v));
+    input.value = value;
+    label.appendChild(input);
+    return { label, input };
+  }
+
+  function renderRegionList() {
+    el.regionList.replaceChildren();
+    S.regions.forEach((r, i) => {
+      const li = document.createElement("li");
+      li.className = "region-item"; li.dataset.id = String(r.id);
+
+      const head = document.createElement("div"); head.className = "region-head";
+      const title = document.createElement("strong"); title.textContent = `範囲 ${i + 1}`;
+      const summary = document.createElement("span"); summary.className = "region-summary"; summary.textContent = regionSummaryText(r);
+      head.append(title, summary);
+
+      const dur = durationOfVideo();
+      const startF = numberField("開始（秒）", `範囲${i + 1}の開始（秒）`, { min: 0, max: Math.max(0, dur), step: 0.1 }, r.start.toFixed(2));
+      const durF = numberField("継続（秒）", `範囲${i + 1}の継続（秒）。空にすると最後まで`, { min: 0.1, step: 0.1, placeholder: "最後まで" }, r.duration === null ? "" : String(r.duration));
+      const fields = document.createElement("div"); fields.className = "region-fields"; fields.append(startF.label, durF.label);
+
+      const refresh = () => { summary.textContent = regionSummaryText(r); schedulePreview(); };
+      startF.input.addEventListener("change", () => {
+        const v = parseFloat(startF.input.value);
+        r.start = Number.isFinite(v) ? Math.max(0, Math.min(v, Math.max(0, dur - 0.01))) : r.start;
+        startF.input.value = r.start.toFixed(2);
+        refresh();
+      });
+      durF.input.addEventListener("change", () => {
+        const raw = durF.input.value.trim();
+        const v = parseFloat(raw);
+        r.duration = raw === "" || !Number.isFinite(v) ? null : Math.max(0.1, Math.min(v, C.MAX_EXPORT_SECONDS));
+        durF.input.value = r.duration === null ? "" : String(r.duration);
+        refresh();
+      });
+
+      const actions = document.createElement("div"); actions.className = "button-row";
+      const jump = document.createElement("button"); jump.type = "button"; jump.className = "subtle"; jump.textContent = "この時刻へ移動";
+      jump.addEventListener("click", () => { el.slider.value = String(r.start); updateTimeLabel(); schedulePreview(); });
+      const toEnd = document.createElement("button"); toEnd.type = "button"; toEnd.className = "subtle"; toEnd.textContent = "最後まで";
+      toEnd.addEventListener("click", () => { r.duration = null; durF.input.value = ""; refresh(); });
+      const del = document.createElement("button"); del.type = "button"; del.className = "subtle"; del.textContent = "削除";
+      del.addEventListener("click", () => { S.regions = S.regions.filter((x) => x.id !== r.id); renderRegionList(); schedulePreview(); });
+      actions.append(jump, toEnd, del);
+
+      li.append(head, fields, actions);
+      el.regionList.appendChild(li);
+    });
+    el.regionEmpty.hidden = S.regions.length > 0;
+    updateControls();
+  }
+
+  el.clearRegionsBtn.addEventListener("click", () => {
+    if (!S.regions.length || S.processing) return;
+    if (!window.confirm("手動モザイクの範囲を、すべて削除しますか？")) return;
+    S.regions = []; renderRegionList(); schedulePreview();
+  });
 
   // ---------------------------------------------------------------- 書き出し
   el.exportBtn.addEventListener("click", () => {
@@ -389,7 +558,7 @@
     S.processing = true; S.lastActivity = Date.now(); updateControls();
     el.progress.hidden = false; setProgress(0, "処理を開始しています…");
     try {
-      send({ type: "export", file: S.file, quality: el.quality.value, accuracy: el.accuracy.value });
+      send({ type: "export", file: S.file, quality: el.quality.value, accuracy: el.accuracy.value, regions: wireRegions() });
     } catch (e) {
       S.processing = false; el.progress.hidden = true; updateControls();
       showBanner(e.message);
@@ -412,7 +581,7 @@
     el.resultVideo.src = S.resultUrl;
     el.downloadBtn.textContent = `ダウンロード（${fmtSize(m.size)}）`;
     const codecLabel = { avc: "H.264", hevc: "HEVC", vp9: "VP9", av1: "AV1" }[m.codec] || String(m.codec);
-    el.resultSummary.textContent = `元のサイズの${m.ratioPct}%　${codecLabel}　${m.frames}フレーム`
+    el.resultSummary.textContent = `元のサイズの${m.ratioPct}%　${codecLabel}　${m.frames}フレーム` + (m.manualCount > 0 ? `　手動モザイク${m.manualCount}件` : "")
       + (m.codec === "hevc" ? "　※HEVCはブラウザによってはここで再生できません。ダウンロードしてご確認ください。" : "");
     if (m.warnings && m.warnings.length) { el.resultWarn.textContent = m.warnings.join("\n"); el.resultWarn.hidden = false; }
     else el.resultWarn.hidden = true;
@@ -445,6 +614,8 @@
     S.file = null; S.info = null;
     clearTimeout(S.previewTimer);
     S.previewPending = false;
+    S.regions = []; S.drag = null; S.frameTime = 0; renderRegionList();
+    if (S.lastBitmap) { if (S.lastBitmap.close) S.lastBitmap.close(); S.lastBitmap = null; }
     el.canvas.hidden = true; el.empty.hidden = false;
     el.timeline.hidden = true; el.fileMeta.hidden = true; el.previewNote.hidden = true; el.changeBtn.hidden = true;
     el.drop.hidden = false; el.progress.hidden = true;
