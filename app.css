@@ -42,3 +42,16 @@ html:not(.fm-ok) .app { display: none; }
 .verdict { margin: 16px 0; padding: 12px 14px; border-radius: 12px; font-weight: 700; background: var(--pale); color: var(--deep); border: 1px solid var(--line); }
 .verdict.ng { background: var(--danger-bg); color: var(--danger); border-color: #e6b8b8; }
 .report { width: 100%; min-height: 150px; }
+
+/* 手動モザイク */
+input[type="number"] { width: 100%; padding: .45rem .6rem; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); font: inherit; }
+input[type="number"]:focus-visible { outline: 3px solid #8dad4e; outline-offset: 2px; }
+input[type="number"]:disabled { opacity: .45; cursor: not-allowed; }
+.region-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 8px; }
+.region-list:empty { display: none; }
+.region-item { border: 1px solid var(--line); border-radius: 12px; padding: 10px; background: var(--paper); display: grid; gap: 8px; }
+.region-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.region-head strong { color: var(--deep); font-size: .9rem; }
+.region-summary { color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+.region-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.region-fields label { display: grid; gap: 3px; font-size: .78rem; color: var(--muted); font-weight: 400; }

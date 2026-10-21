@@ -21,7 +21,7 @@
     <div class="brand">
       <div class="mark" aria-hidden="true">◐</div>
       <div>
-        <h1>動画に顔にモザイク by 武庫</h1>
+        <h1>FaceMosaic Browser</h1>
         <p>動画の顔を自動で見つけて追いかけ、顔だけにモザイクをかけます。</p>
       </div>
     </div>
@@ -67,7 +67,7 @@
         </div>
         <input type="range" id="slider" min="0" max="0" step="0.04" value="0">
       </div>
-      <p class="hint" id="previewNote" hidden>スライダーを動かすと、その位置のフレームに顔検出とモザイクを適用して表示します（少し時間がかかります）。</p>
+      <p class="hint" id="previewNote" hidden>スライダーを動かすと、その位置のフレームに顔検出とモザイクを適用して表示します（少し時間がかかります）。検出できていない顔は、このプレビューの上をドラッグして囲むと、手動でモザイクを掛けられます。</p>
     </section>
 
     <div class="side">
@@ -98,6 +98,16 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <section class="panel" aria-labelledby="hManual">
+        <div class="panel-head">
+          <h2 id="hManual">手動モザイク</h2>
+          <button type="button" class="subtle" id="clearRegionsBtn" disabled>すべて削除</button>
+        </div>
+        <p class="hint">顔が検出されていないときは、左のプレビューの上をドラッグして範囲を指定します。そのフレームの時刻から、同じ位置にモザイクを掛けます（顔認識は使いません）。継続秒数を空にすると、動画の最後まで掛かります。</p>
+        <ul class="region-list" id="regionList" aria-label="手動モザイクの範囲の一覧"></ul>
+        <p class="hint" id="regionEmpty">指定した範囲はまだありません。</p>
       </section>
 
       <section class="panel" aria-labelledby="hExport">

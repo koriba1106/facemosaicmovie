@@ -1,6 +1,6 @@
 {
   "name": "facemosaic-browser",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "description": "動画の顔を自動認識・追跡してモザイクをかける、ブラウザだけで動く静的Webアプリ",
   "scripts": {
