@@ -34,17 +34,21 @@
     banner: $("banner"), drop: $("drop"), dropTitle: $("dropTitle"), dropHint: $("dropHint"), fileInput: $("fileInput"),
     fileMeta: $("fileMeta"), changeBtn: $("changeBtn"), empty: $("empty"), canvas: $("previewCanvas"),
     timeline: $("timeline"), slider: $("slider"), timeLabel: $("timeLabel"), previewNote: $("previewNote"),
-    quality: $("quality"), accuracy: $("accuracy"), engineState: $("engineState"),
+    quality: $("quality"), accuracy: $("accuracy"), engineState: $("engineState"), gpuState: $("gpuState"),
     modelPick: $("modelPick"), modelBtn: $("modelBtn"), modelInput: $("modelInput"), diagBtn: $("diagBtn"),
     exportBtn: $("exportBtn"), cancelBtn: $("cancelBtn"), progress: $("progress"), blocks: $("blocks"),
     progText: $("progText"), progPct: $("progPct"), result: $("result"), resultVideo: $("resultVideo"),
     resultSummary: $("resultSummary"), resultWarn: $("resultWarn"), downloadBtn: $("downloadBtn"),
     regionList: $("regionList"), regionEmpty: $("regionEmpty"), clearRegionsBtn: $("clearRegionsBtn"),
+    step1: $("step1"), step2: $("step2"), step3: $("step3"), guideText: $("guideText"), previewStatus: $("previewStatus"),
+    stepBackSecBtn: $("stepBackSecBtn"), stepBackFrameBtn: $("stepBackFrameBtn"),
+    stepFwdFrameBtn: $("stepFwdFrameBtn"), stepFwdSecBtn: $("stepFwdSecBtn"),
   };
 
   const S = {
     worker: null,
     engine: "loading",            // loading | need-model | ready | failed
+    gpu: null,
     file: null, info: null,
     inspecting: false, processing: false,
     previewInFlight: false, previewPending: false, previewTimer: null, previewId: 0,
@@ -95,6 +99,48 @@
   window.addEventListener("error", (e) => reportUnexpected(e && e.message));
   window.addEventListener("unhandledrejection", (e) => reportUnexpected(e && e.reason && (e.reason.message || e.reason)));
 
+  function updateStepGuide() {
+    const hasFile = !!S.file;
+    const hasResult = !el.result.hidden;
+    el.step1.className = "step" + (hasFile ? " done" : " active");
+    el.step2.className = "step" + (hasResult || S.processing ? " done" : hasFile ? " active" : "");
+    el.step3.className = "step" + (hasResult ? " done" : S.processing ? " active" : "");
+
+    if (S.processing) {
+      el.guideText.textContent = "STEP 3 処理中：顔検出とモザイク合成を行っています。完了するまでこのタブを開いたままお待ちください。";
+    } else if (hasResult) {
+      el.guideText.textContent = "完了：出力結果の動画を確認し、「ダウンロード」ボタンを押してパソコンに保存してください。";
+    } else if (hasFile) {
+      el.guideText.textContent = "STEP 2 プレビュー確認：スライダーでモザイクの掛かり具合を確認してください。隠れていない顔があればプレビュー上をドラッグして囲めます。確認できたら右下の「動画を出力」を押してください。";
+    } else if (S.engine === "ready") {
+      el.guideText.textContent = "STEP 1 動画を選択：下の点線枠をクリックするか、動画ファイルをドラッグ＆ドロップしてください（外部には一切送信されません）。";
+    } else {
+      el.guideText.textContent = "準備中：顔認識エンジンとGPU環境を初期化しています…";
+    }
+  }
+
+  function updateGpuBadge(gpu) {
+    if (!el.gpuState) return;
+    if (!gpu) {
+      el.gpuState.textContent = "GPU優先モード: 準備中…";
+      el.gpuState.className = "gpu-badge fallback";
+      return;
+    }
+    const features = [];
+    if (gpu.webgpu) features.push("WebGPU");
+    if (gpu.webgl2) features.push("WebGL2");
+    if (gpu.hwEncode) features.push("HWエンコード");
+    if (gpu.hwDecode) features.push("HWデコード");
+    if (gpu.dnnBackend && gpu.dnnBackend.includes("GPU")) features.push(gpu.dnnBackend);
+    if (gpu.available || features.length > 0) {
+      el.gpuState.textContent = "⚡ GPU優先モード: 有効（" + (features.join(" / ") || "ハードウェア支援") + "）";
+      el.gpuState.className = "gpu-badge";
+    } else {
+      el.gpuState.textContent = "GPU優先モード: 標準ソフトウェア処理（利用可能なGPUアクセラレーションなし）";
+      el.gpuState.className = "gpu-badge fallback";
+    }
+  }
+
   function updateControls() {
     const ready = S.engine === "ready";
     const canPick = ready && !S.processing && !S.inspecting;
@@ -105,6 +151,11 @@
     el.quality.disabled = S.processing;
     el.accuracy.disabled = S.processing;
     el.slider.disabled = S.processing;
+    const seekDisabled = S.processing || !S.file;
+    el.stepBackSecBtn.disabled = seekDisabled;
+    el.stepBackFrameBtn.disabled = seekDisabled;
+    el.stepFwdFrameBtn.disabled = seekDisabled;
+    el.stepFwdSecBtn.disabled = seekDisabled;
     el.changeBtn.disabled = !canPick;
     el.clearRegionsBtn.disabled = S.processing || S.regions.length === 0;
     el.regionList.querySelectorAll("input,button").forEach((x) => { x.disabled = S.processing; });
@@ -112,6 +163,7 @@
     else if (S.engine === "need-model") el.dropTitle.textContent = "顔認識モデルを読み込めません";
     else if (S.engine === "failed") el.dropTitle.textContent = "エンジンを起動できません";
     else el.dropTitle.textContent = "エンジンを準備しています…";
+    updateStepGuide();
   }
 
   function setEngine(state, text) {
@@ -163,6 +215,8 @@
     S.lastActivity = Date.now();
     switch (m.type) {
       case "ready": {
+        S.gpu = m.gpu || { available: true, webgpu: !!(navigator && navigator.gpu) };
+        updateGpuBadge(S.gpu);
         const w = S.waiters.get("init"); if (w) { S.waiters.delete("init"); w.resolve(); }
         break;
       }
@@ -188,6 +242,7 @@
       const w = S.waiters.get(m.id); if (w) { S.waiters.delete(m.id); w.reject(new Error(msg)); }
     } else if (m.for === "preview") {
       S.previewInFlight = false;
+      el.previewStatus.textContent = "プレビュー失敗";
       if (m.id === S.previewId) showBanner("プレビューを表示できません。\n" + msg);
       if (S.previewPending) pumpPreview();
     } else if (m.for === "export") {
@@ -258,6 +313,13 @@
       showBanner(problems.join("\n"));
       return;
     }
+    // メインスレッドでも WebGPU の高パフォーマンスアダプタを事前要求して GPU を優先起動させる
+    try {
+      if (navigator && navigator.gpu && typeof navigator.gpu.requestAdapter === "function") {
+        navigator.gpu.requestAdapter({ powerPreference: "high-performance" }).catch(() => {});
+      }
+    } catch (e) { /* 非対応環境は無視 */ }
+
     try {
       S.worker = new Worker("js/worker.js");
     } catch (e) {
@@ -323,17 +385,18 @@
 
     resetStage(true);
     S.inspecting = true; updateControls();
+    el.previewStatus.textContent = "動画を解析中…";
     el.fileMeta.hidden = false; el.fileMeta.textContent = shownName + "　動画を解析中…";
     let info;
     try {
       info = await request({ type: "inspect", file }, INSPECT_TIMEOUT_MS);
     } catch (e) {
-      S.inspecting = false; el.fileMeta.hidden = true; updateControls();
+      S.inspecting = false; el.fileMeta.hidden = true; el.previewStatus.textContent = "動画未選択"; updateControls();
       return showBanner("この動画を読み込めません。\n" + e.message);
     }
     S.inspecting = false;
     if (!info.decodable) {
-      el.fileMeta.hidden = true; updateControls();
+      el.fileMeta.hidden = true; el.previewStatus.textContent = "動画未選択"; updateControls();
       return showBanner("この動画のコーデック（" + (info.codec || "不明") + "）はブラウザで再生できないため処理できません。\nmp4（H.264）に変換してお試しください。");
     }
 
@@ -350,6 +413,20 @@
   function updateTimeLabel() {
     el.timeLabel.textContent = `${fmtTime(parseFloat(el.slider.value))} / ${fmtTime(S.info ? S.info.duration : 0)}`;
   }
+  function stepTimeline(deltaSec) {
+    if (!S.file || S.processing) return;
+    const maxDur = S.info ? Math.max(0, S.info.duration) : 0;
+    const cur = parseFloat(el.slider.value) || 0;
+    const next = Math.max(0, Math.min(maxDur, Math.round((cur + deltaSec) * 1000) / 1000));
+    el.slider.value = String(next);
+    updateTimeLabel();
+    schedulePreview();
+  }
+  el.stepBackSecBtn.addEventListener("click", () => stepTimeline(-1.0));
+  el.stepBackFrameBtn.addEventListener("click", () => stepTimeline(-0.04));
+  el.stepFwdFrameBtn.addEventListener("click", () => stepTimeline(0.04));
+  el.stepFwdSecBtn.addEventListener("click", () => stepTimeline(1.0));
+
   el.slider.addEventListener("input", () => {
     updateTimeLabel();
     clearTimeout(S.previewTimer);
@@ -363,10 +440,12 @@
     S.previewInFlight = true; S.previewPending = false;
     S.previewId = S.nextId++;
     S.lastActivity = Date.now();
+    el.previewStatus.textContent = "プレビュー更新中…";
     try {
       send({ type: "preview", file: S.file, time: parseFloat(el.slider.value) || 0, accuracy: el.accuracy.value, id: S.previewId, regions: wireRegions() });
     } catch (e) {
       S.previewInFlight = false;
+      el.previewStatus.textContent = "エラー";
       showBanner(e.message);
     }
   }
@@ -377,6 +456,7 @@
     S.lastBitmap = bmp;
     paintPreview();
     el.canvas.hidden = false; el.empty.hidden = true;
+    el.previewStatus.textContent = "モザイク確認中";
   }
 
   /** プレビュー画像を描き、その時刻に有効な手動範囲の枠と、ドラッグ中の枠を重ねる */
@@ -581,7 +661,8 @@
     el.resultVideo.src = S.resultUrl;
     el.downloadBtn.textContent = `ダウンロード（${fmtSize(m.size)}）`;
     const codecLabel = { avc: "H.264", hevc: "HEVC", vp9: "VP9", av1: "AV1" }[m.codec] || String(m.codec);
-    el.resultSummary.textContent = `元のサイズの${m.ratioPct}%　${codecLabel}　${m.frames}フレーム` + (m.manualCount > 0 ? `　手動モザイク${m.manualCount}件` : "")
+    const hwLabel = m.hardwareAcceleration === "prefer-hardware" ? "（GPU優先エンコード）" : "";
+    el.resultSummary.textContent = `元のサイズの${m.ratioPct}%　${codecLabel}${hwLabel}　${m.frames}フレーム` + (m.manualCount > 0 ? `　手動モザイク${m.manualCount}件` : "")
       + (m.codec === "hevc" ? "　※HEVCはブラウザによってはここで再生できません。ダウンロードしてご確認ください。" : "");
     if (m.warnings && m.warnings.length) { el.resultWarn.textContent = m.warnings.join("\n"); el.resultWarn.hidden = false; }
     else el.resultWarn.hidden = true;
@@ -619,6 +700,7 @@
     el.canvas.hidden = true; el.empty.hidden = false;
     el.timeline.hidden = true; el.fileMeta.hidden = true; el.previewNote.hidden = true; el.changeBtn.hidden = true;
     el.drop.hidden = false; el.progress.hidden = true;
+    el.previewStatus.textContent = "動画未選択";
     clearResult();
     if (!keepBanner) hideBanner();
     updateControls();

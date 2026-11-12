@@ -2,6 +2,8 @@
  * 重い処理（OpenCV.js による検出・モザイク、Mediabunny によるデコード/エンコード）は全てここで行い、
  * 画面（メインスレッド）は固まらない。動画データはこの端末の外へは一切送信しない。
  *
+ * GPU優先: WebGPU / WebGL2 の高パフォーマンスアダプタ取得、WebCodecs のハードウェアエンコード/デコード優先、
+ *         および OpenCV.js の GPU バックエンド優先初期化に対応する。
  * セキュリティ: 受け取るメッセージは必ず FMCore.validateRequest() で検証してから処理する。
  *               使用するモデルは SHA-256 が固定値と一致するものだけを読み込む。
  */
@@ -12,6 +14,8 @@ const C = FMCore.C;
 let cv = null;              // OpenCV.js
 let mb = null;              // Mediabunny
 let detector = null;        // {primary, coarse}（dynamic-input YuNet）
+let gpuInfo = null;         // GPU 利用状況
+let gpuAdapter = null;      // WebGPU high-performance アダプタ保持用
 let busy = false;           // 書き出し中
 let currentConversion = null;
 let cancelRequested = false;
@@ -28,6 +32,72 @@ function errText(e) {
 async function sha256Hex(buffer) {
   const digest = await crypto.subtle.digest("SHA-256", buffer);
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// ---------------------------------------------------------------- GPU 優先初期化・検出
+async function initGpuAcceleration() {
+  const info = {
+    available: false,
+    webgpu: false,
+    webgl2: false,
+    hwEncode: false,
+    hwDecode: false,
+    dnnBackend: "OpenCV(WASM/CPU)",
+    renderer: "",
+  };
+  // 1. WebGPU（高パフォーマンスGPUを優先要求してディスクリートGPUを起動状態にする）
+  try {
+    if (typeof navigator !== "undefined" && navigator.gpu && typeof navigator.gpu.requestAdapter === "function") {
+      const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+      if (adapter) {
+        gpuAdapter = adapter;
+        info.webgpu = true;
+      }
+    }
+  } catch (e) { /* WebGPU 非対応環境はそのまま続行 */ }
+
+  // 2. WebGL2（高パフォーマンス指定でプローブし、コンテキスト枠を消費しないよう即解放）
+  try {
+    if (typeof OffscreenCanvas !== "undefined") {
+      const c = new OffscreenCanvas(1, 1);
+      const gl = c.getContext("webgl2", { powerPreference: "high-performance", desynchronized: true })
+              || c.getContext("webgl", { powerPreference: "high-performance", desynchronized: true });
+      if (gl && typeof gl.getParameter === "function") {
+        info.webgl2 = true;
+        try {
+          const dbg = gl.getExtension && gl.getExtension("WEBGL_debug_renderer_info");
+          const raw = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+          if (raw && typeof raw === "string") info.renderer = FMCore.sanitizeName(raw, 64);
+        } catch (e) { /* レンダラ名取得不可は無視 */ }
+        try {
+          const lose = gl.getExtension && gl.getExtension("WEBGL_lose_context");
+          if (lose && typeof lose.loseContext === "function") lose.loseContext();
+        } catch (e) { /* 解放失敗は無視 */ }
+      }
+    }
+  } catch (e) { /* WebGL 非対応環境はそのまま続行 */ }
+
+  // 3. WebCodecs ハードウェアアクセラレーション対応確認
+  try {
+    if (typeof VideoEncoder !== "undefined" && typeof VideoEncoder.isConfigSupported === "function") {
+      const enc = await VideoEncoder.isConfigSupported({
+        codec: "avc1.42001f", width: 1280, height: 720, bitrate: 2000000, hardwareAcceleration: "prefer-hardware",
+      });
+      info.hwEncode = !!(enc && enc.supported);
+    }
+  } catch (e) { /* 非対応 */ }
+
+  try {
+    if (typeof VideoDecoder !== "undefined" && typeof VideoDecoder.isConfigSupported === "function") {
+      const dec = await VideoDecoder.isConfigSupported({
+        codec: "avc1.42001f", codedWidth: 1280, codedHeight: 720, hardwareAcceleration: "prefer-hardware",
+      });
+      info.hwDecode = !!(dec && dec.supported);
+    }
+  } catch (e) { /* 非対応 */ }
+
+  info.available = !!(info.webgpu || info.webgl2 || info.hwEncode || info.hwDecode);
+  return info;
 }
 
 // ---------------------------------------------------------------- 初期化
@@ -56,9 +126,14 @@ async function handleInit({ modelBytes }) {
   }
   await ensureCv();
   await ensureMediabunny();
+  gpuInfo = await initGpuAcceleration();
   if (detector) FMPipeline.disposeDetector(detector);
   detector = FMPipeline.createDynamicDetector(cv, FMCore, modelBytes);
-  post({ type: "ready" });
+  if (detector && detector.backend) {
+    gpuInfo.dnnBackend = detector.backend;
+    if (detector.gpu) gpuInfo.available = true;
+  }
+  post({ type: "ready", gpu: gpuInfo });
 }
 
 function requireReady() {
@@ -114,6 +189,22 @@ function makeScratch(w, h) {
   return { canvas, ctx, w, h };
 }
 
+/** 出力・エンコード渡し用の GPU 優先 OffscreenCanvas を作成する */
+function makeGpuCanvas(w, h) {
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true, willReadFrequently: false }) || canvas.getContext("2d");
+  return { canvas, ctx };
+}
+
+/** ハードウェアデコードを優先した VideoSampleSink を作成する */
+function createSampleSink(vtrack) {
+  try {
+    return new mb.VideoSampleSink(vtrack, { hardwareAcceleration: "prefer-hardware" });
+  } catch (e) {
+    return new mb.VideoSampleSink(vtrack);
+  }
+}
+
 // ---------------------------------------------------------------- プレビュー
 async function handlePreview({ file, time, id, accuracy, regions }) {
   if (busy) { post({ type: "preview-skipped", id }); return; }
@@ -125,15 +216,16 @@ async function handlePreview({ file, time, id, accuracy, regions }) {
     const W = even(vtrack.displayWidth), H = even(vtrack.displayHeight);
     pipe = new FMPipeline.FacePipeline(cv, FMCore, detector);
     const scratch = makeScratch(W, H);
-    const sink = new mb.VideoSampleSink(vtrack);
+    const sink = createSampleSink(vtrack);
     const duration = await input.computeDuration();
     const t = Math.max(0, Math.min(time, Math.max(0, duration - 0.001)));
-    const warmSec = 0.5;                                    // 約12〜15フレームの助走で追跡状態を作る
+    const warmSec = accuracy === "motion" ? 0.65 : 0.5;     // 約12〜20フレームの助走で追跡状態を作る
     const dim = FMCore.detectDim(accuracy, true);
     let count = 0, lastTs = t;                              // lastTs: 実際に表示するフレームの時刻（手動範囲の判定に使う）
 
     for await (const sample of sink.samples(Math.max(0, t - warmSec), t + 0.0005)) {
       try {
+        if (busy) { post({ type: "preview-skipped", id }); return; }
         const img = sampleToRgba(sample, scratch, W, H);
         pipe.processFrame(img.data, W, H, dim, false);      // 助走: 追跡のみ更新
         lastTs = sample.timestamp;
@@ -143,6 +235,7 @@ async function handlePreview({ file, time, id, accuracy, regions }) {
       }
     }
     if (count === 0) {                                      // 範囲に1枚も無い場合は直近フレームで代用
+      if (busy) { post({ type: "preview-skipped", id }); return; }
       const s = await sink.getSample(t);
       if (!s) throw new Error("指定位置のフレームを取得できませんでした。");
       try {
@@ -155,13 +248,14 @@ async function handlePreview({ file, time, id, accuracy, regions }) {
     const rects = FMCore.activeRegions(regions, lastTs).map((r) => FMCore.regionToRect(r, W, H));
     const out = pipe.renderCurrent(rects);
 
-    const outCanvas = new OffscreenCanvas(W, H);
-    outCanvas.getContext("2d").putImageData(new ImageData(out, W, H), 0, 0);
+    const { canvas: outCanvas, ctx: outCtx } = makeGpuCanvas(W, H);
+    outCtx.putImageData(new ImageData(out, W, H), 0, 0);
     const maxW = 960, scale = Math.min(1, maxW / W);
     let blobCanvas = outCanvas;
     if (scale < 1) {
-      blobCanvas = new OffscreenCanvas(Math.round(W * scale), Math.round(H * scale));
-      blobCanvas.getContext("2d").drawImage(outCanvas, 0, 0, blobCanvas.width, blobCanvas.height);
+      const scaled = makeGpuCanvas(Math.round(W * scale), Math.round(H * scale));
+      scaled.ctx.drawImage(outCanvas, 0, 0, scaled.canvas.width, scaled.canvas.height);
+      blobCanvas = scaled.canvas;
     }
     const blob = await blobCanvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
     post({ type: "preview", id, blob, frames: count, frameTime: lastTs });
@@ -172,10 +266,21 @@ async function handlePreview({ file, time, id, accuracy, regions }) {
 }
 
 // ---------------------------------------------------------------- 書き出し
+/**
+ * コーデック候補から利用可能なものを選択する。
+ * GPU ハードウェアエンコード（prefer-hardware）を最優先で試行し、非対応なら通常エンコードへフォールバックする。
+ */
 async function pickCodec(order, W, H, bitrate) {
   for (const c of order) {
     try {
-      if (await mb.canEncodeVideo(c, { width: W, height: H, bitrate })) return c;
+      if (await mb.canEncodeVideo(c, { width: W, height: H, bitrate, hardwareAcceleration: "prefer-hardware" })) {
+        return { codec: c, hardwareAcceleration: "prefer-hardware" };
+      }
+    } catch (e) { /* ハードウェア指定が例外の場合は通常判定へ */ }
+    try {
+      if (await mb.canEncodeVideo(c, { width: W, height: H, bitrate })) {
+        return { codec: c, hardwareAcceleration: "no-preference" };
+      }
     } catch (e) { /* 次の候補へ */ }
   }
   return null;
@@ -200,8 +305,9 @@ async function handleExport({ file, quality, maxSeconds, accuracy, regions }) {
 
     const bitrate = compact ? FMCore.calculateCompactBitrate(file.size, duration) : mb.QUALITY_HIGH;
     const order = compact ? ["hevc", "avc", "vp9"] : ["avc", "vp9", "av1"];
-    const codec = await pickCodec(order, W, H, bitrate);
-    if (!codec) throw new Error("このブラウザは動画のエンコードに対応していません。最新の Chrome または Edge をお使いください。");
+    const picked = await pickCodec(order, W, H, bitrate);
+    if (!picked) throw new Error("このブラウザは動画のエンコードに対応していません。最新の Chrome または Edge をお使いください。");
+    const { codec, hardwareAcceleration } = picked;
 
     post({ type: "progress", value: 2, text: "顔検出エンジンを準備しています…" });
     pipe = new FMPipeline.FacePipeline(cv, FMCore, detector);
@@ -226,8 +332,8 @@ async function handleExport({ file, quality, maxSeconds, accuracy, regions }) {
         consecutive = 0;
       }
       frames++;
-      const out = new OffscreenCanvas(w, h);                // 返却用は毎回新規（エンコーダが保持しても安全）
-      out.getContext("2d").putImageData(img, 0, 0);
+      const { canvas: out, ctx: outCtx } = makeGpuCanvas(w, h); // 返却用は毎回新規（エンコーダが保持しても安全）
+      outCtx.putImageData(img, 0, 0);
       return out;
     };
 
@@ -236,7 +342,7 @@ async function handleExport({ file, quality, maxSeconds, accuracy, regions }) {
       input, output,
       ...(maxSeconds ? { trim: { start: 0, end: maxSeconds } } : {}),
       video: {
-        codec, bitrate, forceTranscode: true, allowTransformationMetadata: false,
+        codec, bitrate, hardwareAcceleration, forceTranscode: true, allowTransformationMetadata: false,
         processedWidth: W, processedHeight: H, process,
       },
       showWarnings: false,
@@ -275,7 +381,7 @@ async function handleExport({ file, quality, maxSeconds, accuracy, regions }) {
     if (!buffer || buffer.byteLength === 0) throw new Error("出力ファイルを生成できませんでした。");
     if (detectFailures > 0) warnings.push(`${detectFailures}フレームで顔検出に失敗しました（直前までの追跡位置でモザイクを継続）。`);
     post({
-      type: "done", buffer, codec, frames, manualCount: regions.length,
+      type: "done", buffer, codec, hardwareAcceleration, frames, manualCount: regions.length,
       size: buffer.byteLength, ratioPct: Math.round((buffer.byteLength / Math.max(1, file.size)) * 1000) / 10,
       warnings, hasAudio: !(warnings.some((w) => w.startsWith("音声"))),
     }, [buffer]);
@@ -306,9 +412,12 @@ async function handleDetectImage({ bitmap, id }) {
     const boxes = pipe.tracks.map((t) => t.box.map((v) => Math.round(v)));
     scratch.ctx.putImageData(img, 0, 0);
     const blob = await scratch.canvas.convertToBlob({ type: "image/png" });
-    post({ type: "detected", id, faces: info.faces, tracks: info.tracks, changedPixels: changed, boxes, blob });
+    post({ type: "detected", id, faces: info.faces, tracks: info.tracks, changedPixels: changed, boxes, blob, gpu: gpuInfo });
   } finally {
     pipe.dispose();
+    if (bitmap && typeof bitmap.close === "function") {
+      try { bitmap.close(); } catch (e) { /* 解放済み */ }
+    }
   }
 }
 

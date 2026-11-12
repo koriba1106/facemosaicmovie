@@ -1,5 +1,5 @@
 /* FaceMosaic Browser - core.js
- * デスクトップ版/サーバー版 (engine.py) のアルゴリズムの JavaScript 移植。
+ * デスクトップ版/サーバー版 (engine.py) のアルゴリズムの JavaScript 移植＋高速移動人物(動体)追尾強化。
  * ブラウザ API に依存しない純粋なロジックのみ（OpenCV.js は引数 cv として受け取る）。
  * Node.js でも読み込め、Python 実装との一致を tests/ で検証している。
  */
@@ -55,6 +55,18 @@
     // ★ 検出精度「高速」: 検出解像度を下げて約2倍速くする（小さい顔は見逃しやすくなる）
     FAST_EXPORT_DETECT_DIM: 640,
     FAST_PREVIEW_DETECT_DIM: 480,
+    // ★ 検出精度「動体強化(motion)」および速く動く人物の追尾・リカバリ用定数
+    FAST_MOTION_DETECT_DIM: 1280,
+    FAST_MOTION_PREVIEW_DIM: 800,
+    FAST_MOTION_SCORE_THRESHOLD: 0.32,
+    FAST_MOTION_MIN_ASPECT: 0.42,
+    FAST_MOTION_MAX_ASPECT: 1.65,
+    FAST_TRACK_MAX_DIST: 4.5,
+    FAST_TRACK_MIN_MATCH_SCORE: 0.24,
+    FAST_MAX_PREDICT_SHIFT_FACTOR: 2.50,
+    FAST_LEAD_FACTOR: 0.35,
+    FAST_MAX_LEAD_RATIO: 0.42,
+    FAST_TRAIL_PAD_RATIO: 0.15,
 
     // ★ 使用するモデル（改ざん・差し替え対策としてハッシュを固定）
     MODEL_FILENAME: "face_detection_yunet_2026may.onnx",
@@ -133,6 +145,7 @@
       this.lastDetectionConfidence = +detectionConfidence;
       this.confirmed = this.lastDetectionConfidence >= C.FACE_INSTANT_CONFIRM_SCORE;
       this.maxMissing = this.confirmed ? C.TRACK_MAX_MISSING_CONFIRMED : C.TRACK_MAX_MISSING_UNCONFIRMED;
+      this.fastMode = false;
     }
 
     predictedBox() {
@@ -146,11 +159,21 @@
       const [oldCx, oldCy] = boxCenter(this.box);
       const [newCx, newCy] = boxCenter(detectedBox);
       const [bw, bh] = boxSize(detectedBox);
-      const maxVx = bw * C.MAX_PREDICT_SHIFT_FACTOR, maxVy = bh * C.MAX_PREDICT_SHIFT_FACTOR;
-      const ivx = clamp(newCx - oldCx, -maxVx, maxVx);
-      const ivy = clamp(newCy - oldCy, -maxVy, maxVy);
-      this.velocity[0] = this.velocity[0] * 0.30 + ivx * 0.70;
-      this.velocity[1] = this.velocity[1] * 0.30 + ivy * 0.70;
+      const dx = newCx - oldCx, dy = newCy - oldCy;
+      const jumpRatio = Math.hypot(dx, dy) / Math.max(1, bw, bh);
+      if (this.fastMode && jumpRatio > 0.65) {
+        const maxVx = bw * C.FAST_MAX_PREDICT_SHIFT_FACTOR, maxVy = bh * C.FAST_MAX_PREDICT_SHIFT_FACTOR;
+        const ivx = clamp(dx, -maxVx, maxVx);
+        const ivy = clamp(dy, -maxVy, maxVy);
+        this.velocity[0] = this.velocity[0] * 0.18 + ivx * 0.82;
+        this.velocity[1] = this.velocity[1] * 0.18 + ivy * 0.82;
+      } else {
+        const maxVx = bw * C.MAX_PREDICT_SHIFT_FACTOR, maxVy = bh * C.MAX_PREDICT_SHIFT_FACTOR;
+        const ivx = clamp(dx, -maxVx, maxVx);
+        const ivy = clamp(dy, -maxVy, maxVy);
+        this.velocity[0] = this.velocity[0] * 0.30 + ivx * 0.70;
+        this.velocity[1] = this.velocity[1] * 0.30 + ivy * 0.70;
+      }
       this.box = detectedBox.map(Number);
       this.missingCount = 0;
       this.hits += 1;
@@ -168,8 +191,11 @@
       let vx = this.velocity[0] * C.PREDICT_VELOCITY_FACTOR;
       let vy = this.velocity[1] * C.PREDICT_VELOCITY_FACTOR;
       const [bw, bh] = boxSize(this.box);
-      vx = clamp(vx, -bw * C.MAX_PREDICT_SHIFT_FACTOR, bw * C.MAX_PREDICT_SHIFT_FACTOR);
-      vy = clamp(vy, -bh * C.MAX_PREDICT_SHIFT_FACTOR, bh * C.MAX_PREDICT_SHIFT_FACTOR);
+      const shiftFactor = (this.fastMode && Math.hypot(this.velocity[0], this.velocity[1]) > Math.max(bw, bh) * 0.65)
+        ? C.FAST_MAX_PREDICT_SHIFT_FACTOR
+        : C.MAX_PREDICT_SHIFT_FACTOR;
+      vx = clamp(vx, -bw * shiftFactor, bw * shiftFactor);
+      vy = clamp(vy, -bh * shiftFactor, bh * shiftFactor);
       this.box[0] += vx; this.box[2] += vx;
       this.box[1] += vy; this.box[3] += vy;
       this.velocity[0] *= C.VELOCITY_DAMPING;
@@ -178,9 +204,24 @@
 
     getRenderBox() {
       const [x1, y1, x2, y2] = this.box;
-      if (!this.confirmed || this.hits < 4) return [x1, y1, x2, y2];
       const [vx, vy] = this.velocity;
       const bw = x2 - x1, bh = y2 - y1;
+      const speedRatio = Math.hypot(vx, vy) / Math.max(1, bw, bh);
+      if (this.fastMode && this.confirmed && speedRatio > 0.25) {
+        const leadX = clamp(vx * C.FAST_LEAD_FACTOR, -bw * C.FAST_MAX_LEAD_RATIO, bw * C.FAST_MAX_LEAD_RATIO);
+        const leadY = clamp(vy * C.FAST_LEAD_FACTOR, -bh * C.FAST_MAX_LEAD_RATIO, bh * C.FAST_MAX_LEAD_RATIO);
+        const trailX = clamp(-vx * 0.14, -bw * C.FAST_TRAIL_PAD_RATIO, bw * C.FAST_TRAIL_PAD_RATIO);
+        const trailY = clamp(-vy * 0.14, -bh * C.FAST_TRAIL_PAD_RATIO, bh * C.FAST_TRAIL_PAD_RATIO);
+        const missPadX = this.missingCount > 0 ? bw * Math.min(3, this.missingCount) * 0.05 : 0;
+        const missPadY = this.missingCount > 0 ? bh * Math.min(3, this.missingCount) * 0.05 : 0;
+        return [
+          x1 + Math.min(0, leadX, trailX) - missPadX,
+          y1 + Math.min(0, leadY, trailY) - missPadY,
+          x2 + Math.max(0, leadX, trailX) + missPadX,
+          y2 + Math.max(0, leadY, trailY) + missPadY,
+        ];
+      }
+      if (!this.confirmed || this.hits < 4) return [x1, y1, x2, y2];
       const leadX = clamp(vx * 0.12, -bw * 0.08, bw * 0.08);
       const leadY = clamp(vy * 0.12, -bh * 0.08, bh * 0.08);
       return [x1 + Math.min(0, leadX), y1 + Math.min(0, leadY), x2 + Math.max(0, leadX), y2 + Math.max(0, leadY)];
@@ -196,6 +237,40 @@
       if (dist > 2.5 && i < 0.05) return 0;
       return i * 0.50 + Math.exp(-1.15 * dist) * 0.32 + sim * 0.18;
     }
+  }
+
+  /**
+   * 速く動く人物（1フレームで顔幅の1.0〜4.5倍移動し IoU が 0 になった場合）向けの第2段階マッチングスコア。
+   * サイズの類似性と予測軌道への整合性を重視し、遠方の別人物との誤結合を防ぐ。
+   */
+  function fastMotionMatchScore(track, detectedBox) {
+    const sim = sizeSimilarity(track.box, detectedBox);
+    if (sim < 0.52) return 0;
+    const predicted = track.predictedBox();
+    const fullPred = [
+      track.box[0] + track.velocity[0], track.box[1] + track.velocity[1],
+      track.box[2] + track.velocity[0], track.box[3] + track.velocity[1],
+    ];
+    const distPred = Math.min(
+      normalizedCenterDistance(predicted, detectedBox),
+      normalizedCenterDistance(fullPred, detectedBox),
+      normalizedCenterDistance(track.box, detectedBox) * 1.05
+    );
+    if (distPred > C.FAST_TRACK_MAX_DIST) return 0;
+
+    const [tcx, tcy] = boxCenter(track.box);
+    const [dcx, dcy] = boxCenter(detectedBox);
+    const dx = dcx - tcx, dy = dcy - tcy;
+    const moveMag = Math.hypot(dx, dy);
+    const velMag = Math.hypot(track.velocity[0], track.velocity[1]);
+    let dirBonus = 0.0;
+    if (velMag > 3.0 && moveMag > 3.0) {
+      const cos = (dx * track.velocity[0] + dy * track.velocity[1]) / (moveMag * velMag);
+      if (cos < -0.55) return 0; // 急激な逆方向ジャンプは別人の可能性が高いため除外
+      dirBonus = Math.max(0, cos) * 0.14;
+    }
+    const overlap = Math.max(iou(predicted, detectedBox), iou(fullPred, detectedBox));
+    return overlap * 0.25 + Math.exp(-0.55 * distPred) * 0.50 + sim * 0.25 + dirBonus;
   }
 
   // ===== 割り当て =====
@@ -275,15 +350,62 @@
     return matchTracksGreedy(tracks, detections);
   }
 
+  /** 第1段階で未対応だったトラックと検出に対し、高速移動向けの第2段階マッチングを行う */
+  function matchTracksFastMotion(tracks, detections, unmatchedTrackIdx, unmatchedDetIdx) {
+    if (!unmatchedTrackIdx.length || !unmatchedDetIdx.length) return [];
+    const subT = unmatchedTrackIdx.map((ti) => tracks[ti]);
+    const subD = unmatchedDetIdx.map((di) => detections[di]);
+    const matrix = subT.map((t) => subD.map((d) => fastMotionMatchScore(t, d.box)));
+    if (subT.length * subD.length <= C.HUNGARIAN_MAX_MATRIX_SIZE) {
+      try {
+        const cost = matrix.map((row) => row.map((s) => 1.0 - s));
+        return linearSumAssignment(cost)
+          .filter(([r, c]) => matrix[r][c] >= C.FAST_TRACK_MIN_MATCH_SCORE)
+          .map(([r, c]) => [unmatchedTrackIdx[r], unmatchedDetIdx[c]]);
+      } catch (e) { /* greedy フォールバック */ }
+    }
+    const cands = [];
+    subT.forEach((_, r) => subD.forEach((__, c) => {
+      if (matrix[r][c] >= C.FAST_TRACK_MIN_MATCH_SCORE) cands.push([matrix[r][c], r, c]);
+    }));
+    cands.sort((a, b) => b[0] - a[0]);
+    const uT = new Set(), uD = new Set(), out = [];
+    for (const [, r, c] of cands) {
+      if (uT.has(r) || uD.has(c)) continue;
+      uT.add(r); uD.add(c);
+      out.push([unmatchedTrackIdx[r], unmatchedDetIdx[c]]);
+    }
+    return out;
+  }
+
   /** @returns {{tracks: RobustFaceTrack[], nextId: number}} */
-  function updateTracksPool(activeTracks, detections, nextTrackId, useHungarian = true) {
+  function updateTracksPool(activeTracks, detections, nextTrackId, useHungarian = true, fastMotion = false) {
     if (!activeTracks.length && !detections.length) return { tracks: [], nextId: nextTrackId };
+    if (fastMotion) activeTracks.forEach((t) => { t.fastMode = true; });
     const matches = matchTracksToDetections(activeTracks, detections, useHungarian);
     const mt = new Set(matches.map((m) => m[0])), md = new Set(matches.map((m) => m[1]));
+
+    // 速く動く人物向け第2段階マッチング（1フレームで大きく移動し IoU が 0 になった場合でも軌道を維持）
+    if (fastMotion && activeTracks.length && detections.length) {
+      const unT = [], unD = [];
+      activeTracks.forEach((_, ti) => { if (!mt.has(ti)) unT.push(ti); });
+      detections.forEach((_, di) => { if (!md.has(di)) unD.push(di); });
+      const extra = matchTracksFastMotion(activeTracks, detections, unT, unD);
+      for (const pair of extra) {
+        matches.push(pair);
+        mt.add(pair[0]);
+        md.add(pair[1]);
+      }
+    }
+
     for (const [ti, di] of matches) activeTracks[ti].update(detections[di].box, detections[di].confidence);
     activeTracks.forEach((t, ti) => { if (!mt.has(ti)) t.predict(); });
     detections.forEach((d, di) => {
-      if (!md.has(di)) activeTracks.push(new RobustFaceTrack(d.box, nextTrackId++, d.confidence));
+      if (!md.has(di)) {
+        const nt = new RobustFaceTrack(d.box, nextTrackId++, d.confidence);
+        if (fastMotion) nt.fastMode = true;
+        activeTracks.push(nt);
+      }
     });
     return { tracks: activeTracks.filter((t) => !t.isLost()), nextId: nextTrackId };
   }
@@ -315,8 +437,9 @@
     return { dw: origW, dh: origH, resized: false };
   }
 
-  /** 検出精度('high'|'fast')と用途から、検出に使う最大辺を決める */
+  /** 検出精度('high'|'fast'|'motion')と用途から、検出に使う最大辺を決める */
   function detectDim(accuracy, preview) {
+    if (accuracy === "motion") return preview ? C.FAST_MOTION_PREVIEW_DIM : C.FAST_MOTION_DETECT_DIM;
     if (accuracy === "fast") return preview ? C.FAST_PREVIEW_DETECT_DIM : C.FAST_EXPORT_DETECT_DIM;
     return preview ? C.DYN_PREVIEW_DETECT_DIM : C.DYN_EXPORT_DETECT_DIM;
   }
@@ -355,6 +478,46 @@
       out.push({ raw: [bx, by, bx + bw, by + bh], confidence: clamp(conf, 0.0, 1.0), modelSize: Math.max(mw, mh) });
     }
     return out;
+  }
+
+  /**
+   * 速く動く人物のモーションブラー（被写体ブレによるスコア低下・縦横比の伸び・ランドマーク揺らぎ）を、
+   * 既存の移動中トラックの予測軌道周辺に限定して救済抽出する。
+   */
+  function extractMotionRecoveryCandidates(data, rowCount, validW, validH, sx, sy, unmatchedTracks, origW, origH) {
+    if (!data || !rowCount || !unmatchedTracks || !unmatchedTracks.length) return [];
+    const cands = [];
+    for (let r = 0; r < rowCount; r++) {
+      const o = r * 15;
+      const mx = data[o], my = data[o + 1], mw = data[o + 2], mh = data[o + 3], conf = data[o + 14];
+      if (![mx, my, mw, mh, conf].every(Number.isFinite)) continue;
+      if (mw <= 0.0 || mh <= 0.0) continue;
+      const ccx = mx + mw * 0.5, ccy = my + mh * 0.5;
+      if (ccx < 0.0 || ccy < 0.0 || ccx >= validW || ccy >= validH) continue;
+
+      const bx = mx * sx, by = my * sy, bw = mw * sx, bh = mh * sy;
+      if (bw < 14.0 || bh < 14.0) continue;
+      const aspect = bw / bh;
+      if (aspect < C.FAST_MOTION_MIN_ASPECT || aspect > C.FAST_MOTION_MAX_ASPECT) continue;
+      if (conf < C.FAST_MOTION_SCORE_THRESHOLD) continue;
+
+      const rawBox = [bx, by, bx + bw, by + bh];
+      const padW = bw * C.FACE_PADDING_X, padH = bh * C.FACE_PADDING_Y;
+      const padded = clipBox([bx - padW, by - padH, bx + bw + padW, by + bh + padH], origW, origH);
+      if (!padded) continue;
+
+      // いずれかの未一致トラックの予測軌道と整合する候補のみ採用（背景の誤検出を防ぐ）
+      const matchesTrack = unmatchedTracks.some((t) => fastMotionMatchScore(t, padded) >= C.FAST_TRACK_MIN_MATCH_SCORE);
+      if (!matchesTrack) continue;
+
+      cands.push({ raw: rawBox, confidence: clamp(conf, 0.0, 1.0), modelSize: Math.max(mw, mh) });
+    }
+    return mergeFaceCandidates(cands).map((cand) => {
+      const [x1, y1, x2, y2] = cand.raw;
+      const padW = (x2 - x1) * C.FACE_PADDING_X, padH = (y2 - y1) * C.FACE_PADDING_Y;
+      const clipped = clipBox([x1 - padW, y1 - padH, x2 + padW, y2 + padH], origW, origH);
+      return clipped ? { box: clipped, confidence: cand.confidence } : null;
+    }).filter(Boolean);
   }
 
   /** 信頼度の高い順に、重なりの大きい候補を除く。_merge_face_candidates() の移植 */
@@ -534,7 +697,7 @@
   function safeBaseName(name, fallback = "video") {
     const noExt = String(name == null ? "" : name).replace(/\.[^./\\]{1,10}$/, "");
     let s = sanitizeName(noExt, 80);
-    if (/^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(s)) s = "_" + s;
+    if (/^(con|prn|aux|nul|conin\$|conout\$|clock\$|com[0-9]|lpt[0-9])$/i.test(s)) s = "_" + s;
     return s || fallback;
   }
 
@@ -563,7 +726,7 @@
   }
 
   const QUALITIES = ["standard", "compact"];
-  const ACCURACIES = ["high", "fast"];
+  const ACCURACIES = ["high", "fast", "motion"];
   const isFiniteNumber = (v) => typeof v === "number" && Number.isFinite(v);
 
   /** Blob/File の外形チェック（Worker に渡る file の検証） */
@@ -577,9 +740,9 @@
    * 想定外の型・範囲外の数値・未知の選択肢は、処理に入る前にここで止める。
    */
   function validateRequest(msg) {
-    if (!msg || typeof msg !== "object" || typeof msg.type !== "string") throw new Error("不正なメッセージです。");
+    if (!msg || typeof msg !== "object" || Array.isArray(msg) || typeof msg.type !== "string") throw new Error("不正なメッセージです。");
     const out = { type: msg.type, id: msg.id };
-    if (msg.id !== undefined && !(isFiniteNumber(msg.id) || typeof msg.id === "string")) throw new Error("不正なIDです。");
+    if (msg.id !== undefined && !(isFiniteNumber(msg.id) || (typeof msg.id === "string" && msg.id.length <= 64))) throw new Error("不正なIDです。");
     switch (msg.type) {
       case "init":
         if (!(msg.modelBytes instanceof ArrayBuffer)) throw new Error("モデルデータの形式が不正です。");
@@ -611,7 +774,8 @@
         }
         return out;
       case "detect-image":
-        if (!msg.bitmap || !(msg.bitmap.width > 0 && msg.bitmap.height > 0) || msg.bitmap.width * msg.bitmap.height > C.MAX_PIXELS)
+        if (!msg.bitmap || typeof msg.bitmap !== "object" || !isFiniteNumber(msg.bitmap.width) || !isFiniteNumber(msg.bitmap.height)
+            || !(msg.bitmap.width > 0 && msg.bitmap.height > 0) || msg.bitmap.width * msg.bitmap.height > C.MAX_PIXELS)
           throw new Error("画像が不正です。");
         out.bitmap = msg.bitmap;
         return out;
@@ -624,9 +788,9 @@
 
   return {
     C, clamp, pyRound, alignUp, boxArea, boxCenter, boxSize, iou, normalizedCenterDistance, sizeSimilarity, clipBox,
-    RobustFaceTrack, linearSumAssignment, matchTracksGreedy, matchTracksHungarian, matchTracksToDetections,
-    updateTracksPool, validateFaceLandmarks, detectionSize, detectDim,
-    extractDynamicCandidates, mergeFaceCandidates, detectDynamicLogic,
+    RobustFaceTrack, fastMotionMatchScore, linearSumAssignment, matchTracksGreedy, matchTracksHungarian, matchTracksToDetections,
+    matchTracksFastMotion, updateTracksPool, validateFaceLandmarks, detectionSize, detectDim,
+    extractDynamicCandidates, extractMotionRecoveryCandidates, mergeFaceCandidates, detectDynamicLogic,
     applyMosaic, calculateCompactBitrate,
     sanitizeRegion, sanitizeRegions, activeRegions, regionToRect, applyManualRects,
     sanitizeName, safeBaseName, formatDuration, estimateRemaining, validateRequest, isBlobLike, isFramed,

@@ -18,12 +18,26 @@
   const $ = (id) => document.getElementById(id);
   const report = [];
   const results = [];
+  const blobUrls = [];
   let videoFile = null;
+
+  function trackBlobUrl(blob) {
+    const u = URL.createObjectURL(blob);
+    blobUrls.push(u);
+    return u;
+  }
+  function revokeAllBlobUrls() {
+    while (blobUrls.length) {
+      const u = blobUrls.pop();
+      try { if (typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(u); } catch (e) { /* ignore */ }
+    }
+  }
 
   $("backBtn").addEventListener("click", () => { location.href = "index.html"; });
   $("vid").addEventListener("change", (e) => {
     videoFile = (e.target.files && e.target.files[0]) || null;
     $("vidTitle").textContent = videoFile ? "通しテスト用の動画: " + FMCore.sanitizeName(videoFile.name) : "通しテスト用の動画を選ぶ（任意・推奨）";
+    $("vidZone").classList.toggle("has-file", Boolean(videoFile));
   });
   $("copyBtn").addEventListener("click", async () => {
     const text = $("report").textContent;
@@ -63,6 +77,7 @@
   };
 
   async function run() {
+    revokeAllBlobUrls();
     $("runBtn").disabled = true; $("rows").replaceChildren(); $("figs").replaceChildren(); $("verdict").hidden = true;
     report.length = 0; results.length = 0;
     report.push("FaceMosaic Browser 診断 " + new Date().toISOString(), "UA: " + navigator.userAgent, "URL: " + location.href);
@@ -122,11 +137,15 @@
     } catch (e) { set("fail", errText(e) + "  → README の手順でモデルを配置してください"); }
 
     // 4. エンコード対応
-    set = row("このブラウザの動画エンコード対応（1280×720）");
+    set = row("このブラウザの動画エンコード対応（1280×720 / GPUハードウェア優先）");
     try {
       const mb = await import("./vendor/mediabunny.min.js");
       const out = [];
-      for (const c of ["avc", "hevc", "vp9", "av1"]) out.push(c + ":" + ((await mb.canEncodeVideo(c, { width: 1280, height: 720, bitrate: 2e6 })) ? "○" : "×"));
+      for (const c of ["avc", "hevc", "vp9", "av1"]) {
+        const hwOk = await mb.canEncodeVideo(c, { width: 1280, height: 720, bitrate: 2e6, hardwareAcceleration: "prefer-hardware" });
+        const anyOk = hwOk || (await mb.canEncodeVideo(c, { width: 1280, height: 720, bitrate: 2e6 }));
+        out.push(c + ":" + (anyOk ? "○" : "×"));
+      }
       const ok = out.some((s) => (s.startsWith("avc") || s.startsWith("vp9")) && s.endsWith("○"));
       ok ? set("pass", out.join("  ")) : set("fail", out.join("  ") + "  → H.264 も VP9 も使えません");
       if (out[0].endsWith("×")) row("H.264 で出力できない（標準画質の出力は VP9 になります）")("warn", "再生互換性のため、H.264 が使える Chrome / Edge を推奨");
@@ -135,6 +154,7 @@
     // 5. エンジン起動
     set = row("顔認識エンジンの起動（OpenCV.js の読み込み + モデルの初期化と自己診断）");
     let worker = null;
+    let readyGpu = null;
     if (!modelBytes) { set("fail", "モデルが確認できていないためスキップ"); return finish(); }
     try {
       worker = new Worker("js/worker.js");
@@ -142,10 +162,11 @@
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("120秒以内に起動しませんでした")), 120000);
         worker.onerror = (e) => { clearTimeout(timer); reject(new Error("Worker エラー: " + (e.message || "読み込み失敗"))); };
-        worker.onmessage = (ev) => { const m = ev.data; if (m.type === "ready") { clearTimeout(timer); resolve(); } else if (m.type === "error") { clearTimeout(timer); reject(new Error(m.message)); } };
+        worker.onmessage = (ev) => { const m = ev.data; if (m.type === "ready") { readyGpu = m.gpu || null; clearTimeout(timer); resolve(); } else if (m.type === "error") { clearTimeout(timer); reject(new Error(m.message)); } };
         const copy = modelBytes.slice(0); worker.postMessage({ type: "init", modelBytes: copy }, [copy]);
       });
-      set("pass", ((performance.now() - t0) / 1000).toFixed(1) + " 秒で起動");
+      const gpuInfo = readyGpu ? ` / GPU状態: ${readyGpu.available ? [readyGpu.dnnBackend && readyGpu.dnnBackend.includes("GPU") ? "DNN:" + readyGpu.dnnBackend : "", readyGpu.webgpu ? "WebGPU" : "", readyGpu.webgl2 ? "WebGL2" : "", readyGpu.hwEncode || readyGpu.hwDecode ? "HWCodec" : ""].filter(Boolean).join("+") : "標準ソフトウェア処理"}` : "";
+      set("pass", ((performance.now() - t0) / 1000).toFixed(1) + " 秒で起動" + gpuInfo);
     } catch (e) { set("fail", errText(e)); if (worker) worker.terminate(); return finish(); }
 
     // 6. 検出テスト
@@ -164,8 +185,8 @@
       ok ? set("pass", `顔 ${res.faces} 件を検出、モザイク ${res.changedPixels} 画素、位置 ${JSON.stringify(res.boxes)}`)
          : set("fail", `顔 ${res.faces} 件 / トラック ${res.tracks} / 変化 ${res.changedPixels} 画素。モデルまたは動作環境に問題がある可能性があります`);
       try {                                   // 画像の表示だけの失敗で、確定済みの検査結果を変えない
-        const a = new Image(); a.alt = "入力"; a.src = URL.createObjectURL(await c.convertToBlob()); fig(a, "入力（診断用画像）");
-        const b = new Image(); b.alt = "出力"; b.src = URL.createObjectURL(res.blob); fig(b, "出力（顔にモザイクが掛かっていればOK）");
+        const a = new Image(); a.alt = "入力"; a.src = trackBlobUrl(await c.convertToBlob()); fig(a, "入力（診断用画像）");
+        const b = new Image(); b.alt = "出力"; b.src = trackBlobUrl(res.blob); fig(b, "出力（顔にモザイクが掛かっていればOK）");
       } catch (e) { /* 表示のみ */ }
     } catch (e) { set("fail", errText(e)); }
 
@@ -182,7 +203,7 @@
           worker.postMessage({ type: "export", file: videoFile, quality: "standard", accuracy: "high", maxSeconds: 3 });
         });
         const sec = (performance.now() - t0) / 1000, fps = done.frames / sec;
-        const url = URL.createObjectURL(new Blob([done.buffer], { type: "video/mp4" }));
+        const url = trackBlobUrl(new Blob([done.buffer], { type: "video/mp4" }));
         const v = document.createElement("video"); v.controls = true; v.muted = true; v.playsInline = true; v.src = url;
         await new Promise((res, rej) => { v.onloadedmetadata = res; v.onerror = () => rej(new Error("出力動画をブラウザで再生できません（コーデック: " + done.codec + "）")); setTimeout(() => rej(new Error("出力動画のメタデータ取得がタイムアウト")), 10000); });
         fig(v, "出力（先頭3秒）。顔にモザイクが追従しているか、縦動画が縦のままか、音が出るか（ミュート解除）を確認してください");
