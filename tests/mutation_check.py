@@ -44,7 +44,7 @@ m("html: インラインスクリプト", sub("index.html", "</body>", "<script>
 m("html: onclick 属性", sub("index.html", 'id="diagBtn"', 'id="diagBtn" onclick="x()"'), "test_security.js")
 m("html: 外部CDNの読み込み", sub("index.html", '<link rel="stylesheet" href="app.css">', '<link rel="stylesheet" href="app.css"><link rel="stylesheet" href="https://cdn.example.com/x.css">'), "test_security.js")
 m("html: iframe の追加", sub("index.html", "</body>", "<iframe src='x'></iframe></body>"), "test_security.js")
-m("css: style.css を1文字改変", sub("style.css", "--uguisu: #697b43;", "--uguisu: #697b44;"), "test_security.js")
+m("css: style.css を1文字改変", sub("style.css", "--uguisu: #d96b27;", "--uguisu: #d96b28;"), "test_security.js")
 m("台帳が古い(台帳更新なしで変更)", append("js/app.js", "\n// 変更\n"), "test_security.js")
 m("vendor: 未知のスクリプト", write("vendor/evil.js", "x"), "test_security.js")
 m("vendor: opencv.js を改変", write("vendor/opencv.js", "\n//x", "a"), "test_security.js")

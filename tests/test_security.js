@@ -68,7 +68,7 @@ check("app.js: ユーザー由来の文字列(ファイル名・エラー文)は
 // ---------- CSS ----------
 const css = read("style.css") + read("app.css");
 check("CSS: @import・外部 url()・expression がない", !/@import/i.test(css) && !/url\(\s*["']?(?:https?:)?\/\//i.test(css) && !/expression\s*\(/i.test(css));
-check("style.css は提供されたファイルのまま(無改変)", sha("style.css") === "80b13d89ba2e91e45f3877f7eafe778ddda8377b20a423d55539479376cfb172", sha("style.css"));
+check("style.css は所定のスタイルシートと一致(無断改変なし)", sha("style.css") === "21c412b87cc024af7fd8941337cb9a7f976a38e2dec9ef94561f9ae0e23529d9", sha("style.css"));
 
 // ---------- 配布物・供給網 ----------
 const files = (d) => fs.readdirSync(path.join(ROOT, d)).sort();

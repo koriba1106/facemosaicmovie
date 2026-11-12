@@ -71,7 +71,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ms = await send({ type: "export", file: FILE, quality: "standard", accuracy: "high" });
   check("エンジン未準備での export は明確なエラー", ms.some((m) => m.type === "error" && m.message.includes("準備")), JSON.stringify(ms));
   ms = await send({ type: "init", modelBytes: modelAB() });
-  check("init: 正しいモデルで OpenCV.js・Mediabunny を読み込み、検出器を作成して ready", types(ms).join() === "ready" && createCalls.length === 1 && createCalls[0] === C.MODEL_SIZE, JSON.stringify(types(ms)));
+  check("init: 正しいモデルで OpenCV.js・Mediabunny を読み込み、検出器を作成して ready（GPU状態を含む）", types(ms).join() === "ready" && createCalls.length === 1 && createCalls[0] === C.MODEL_SIZE && typeof ms[0].gpu === "object", JSON.stringify(types(ms)));
 
   // ---- 入力検証（攻撃的なメッセージ） ----
   const rejects = async (label, msg, needle) => { const r = await send(msg); const e = r.find((m) => m.type === "error"); check(`検証: ${label}`, !!e && (!needle || e.message.includes(needle)) && !types(r).includes("done") && !types(r).includes("progress"), JSON.stringify(r).slice(0, 160)); };
@@ -121,8 +121,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // ---- 検出精度: 検出解像度の切り替え(1280x720) ----
   st.width = 1280; st.height = 720;
   const dimsOf = async (accuracy, kind) => { P.sizes.length = 0; fakeDet.primary.size = null; fakeDet.coarse.size = null; setValid(1280, 720, FM.detectDim(accuracy, kind === "preview")); await send(kind === "preview" ? { type: "preview", file: FILE, time: 3, id: 31, accuracy } : { type: "export", file: FILE, quality: "standard", accuracy }); return P.sizes[0]; };
-  check("export: 高精度は 960 → 入力 960x544、高速は 640 → 640x384 で推論", (await dimsOf("high", "export")) === "960x544" && (await dimsOf("fast", "export")) === "640x384", "");
-  check("preview: 高精度は 640 → 640x384、高速は 480 → 480x288 で推論", (await dimsOf("high", "preview")) === "640x384" && (await dimsOf("fast", "preview")) === "480x288", "");
+  check("export: 高精度は 960 → 入力 960x544、高速は 640 → 640x384、速い動き優先は 1280 → 1280x736 で推論", (await dimsOf("high", "export")) === "960x544" && (await dimsOf("fast", "export")) === "640x384" && (await dimsOf("motion", "export")) === "1280x736", "");
+  check("preview: 高精度は 640 → 640x384、高速は 480 → 480x288、速い動き優先は 800 → 800x480 で推論", (await dimsOf("high", "preview")) === "640x384" && (await dimsOf("fast", "preview")) === "480x288" && (await dimsOf("motion", "preview")) === "800x480", "");
   st.width = 640; st.height = 360;
 
   // ---- export（標準） ----
@@ -132,7 +132,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check("export: done を返し、全フレーム(30)を処理", !!done && done.frames === 30 && P.calls === 30, JSON.stringify(types(ms).slice(-3)));
   check("export: 進捗は範囲内で単調増加", prog.length > 3 && prog.every((v, i) => i === 0 || v >= prog[i - 1]) && prog[0] >= 1 && prog[prog.length - 1] <= 97, prog.join());
   check("export: 出力バッファを転送(transfer)し、サイズ・比率を返す", done.size === 123456 && done.buffer.byteLength === 123456 && Math.abs(done.ratioPct - 2.5) < 0.1 && outbox[outbox.length - 1].transfer[0] === done.buffer, done.ratioPct);
-  check("export: 標準画質は H.264(avc) を最初に選ぶ", done.codec === "avc" && st.lastCanEncode[0][0] === "avc");
+  check("export: 標準画質は H.264(avc) を最初に選び、GPUハードウェアアクセラレーション(prefer-hardware)を優先要求する", done.codec === "avc" && st.lastCanEncode[0][0] === "avc" && st.lastCanEncode[0][1].hardwareAcceleration === "prefer-hardware");
   const o = st.lastConversion.opts;
   check("export: 変換設定(強制再エンコード/回転は焼き込み/処理後サイズ/faststart)", o.video.forceTranscode === true && o.video.allowTransformationMetadata === false && o.video.processedWidth === 640 && o.video.processedHeight === 360 && o.output.format.o.fastStart === "in-memory" && !("trim" in o));
   check("export: 標準は高品質プリセット", o.video.bitrate === mock.QUALITY_HIGH);

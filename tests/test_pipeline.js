@@ -84,6 +84,23 @@ const check = (name, ok, detail) => { ok ? passes++ : fails++; console.log((ok ?
   const det = p9.detectOnly(mkFrame(640, 360), 640, 360, 640);
   check("detectOnly: 追跡せず検出結果だけを返す", det.length === 1 && p9.tracks.length === 0 && det[0].box.length === 4, JSON.stringify(det));
 
+  // ---- 高速移動する人物の顔追跡・モーションブラー救済 ----
+  check("detectDim: 速い動き優先(motion)は書き出し1280・プレビュー800", FM.detectDim("motion", false) === 1280 && FM.detectDim("motion", true) === 800);
+  const Dm = mkDet(); const pm = new PL.FacePipeline(cv, FM, Dm); setValid(Dm, W, H, 1280);
+  Dm.p.faces = [{ fx: 0.15, fy: 0.30, fw: 0.08, fh: 0.08, conf: 0.88 }];
+  pm.processFrame(mkFrame(W, H), W, H, 1280, true);
+  const firstTrackId = pm.tracks[0].id;
+  // 1フレームで顔幅の約1.75倍移動（従来なら IoU=0 で別トラックに分裂していた距離）
+  Dm.p.faces = [{ fx: 0.29, fy: 0.30, fw: 0.08, fh: 0.08, conf: 0.72 }];
+  pm.processFrame(mkFrame(W, H), W, H, 1280, true);
+  check("高速移動(1フレームで顔幅の1.75倍ジャンプ・IoU=0)でも同一トラックIDを維持して追従", pm.tracks.length === 1 && pm.tracks[0].id === firstTrackId && pm.tracks[0].confirmed && pm.tracks[0].velocity[0] > 50, JSON.stringify(pm.tracks[0]));
+  // さらに高速移動し、モーションブラーで信頼度が 0.36 まで低下したフレームでも救済される
+  Dm.p.faces = [{ fx: 0.43, fy: 0.30, fw: 0.08, fh: 0.08, conf: 0.36 }];
+  const rBlur = pm.processFrame(mkFrame(W, H), W, H, 1280, true);
+  check("高速移動中のモーションブラー(低信頼度 0.36)でも軌道上の候補として救済しモザイク継続", rBlur.faces === 1 && rBlur.tracks === 1 && pm.tracks[0].id === firstTrackId && pm.tracks[0].missing === 0, JSON.stringify(rBlur));
+  const rBox = pm.tracks[0].getRenderBox(), rawBox = pm.tracks[0].box;
+  check("高速移動中は進行方向へモザイク枠を先行拡大して顔のはみ出しを防ぐ", rBox[2] - rawBox[2] > rawBox[0] - rBox[0], JSON.stringify({ rawBox, rBox }));
+
   // ---- 解像度変更・小さい画像・奇数サイズ・32の倍数でないサイズ ----
   const D5 = mkDet(); const p5 = new PL.FacePipeline(cv, FM, D5);
   for (const [w, h] of [[640, 360], [320, 240], [1280, 720], [641, 481], [1080, 1920], [100, 60], [33, 31]]) {

@@ -119,6 +119,12 @@ const banner = (t) => t.$("banner");
 
   const b2 = t.sent("preview").length; t.$("accuracy").value = "fast"; t.$("accuracy").dispatchEvent(new t.w.Event("change")); await sleep(120);
   check("検出精度を変えるとプレビューを更新(accuracy=fast を送る)", t.sent("preview").length > b2 && t.sent("preview").at(-1).accuracy === "fast");
+  const bMotion = t.sent("preview").length; t.$("accuracy").value = "motion"; t.$("accuracy").dispatchEvent(new t.w.Event("change")); await sleep(120);
+  check("検出精度『速い動き優先(motion)』を選べる", t.sent("preview").length > bMotion && t.sent("preview").at(-1).accuracy === "motion");
+  t.$("accuracy").value = "fast"; t.$("accuracy").dispatchEvent(new t.w.Event("change")); await sleep(120);
+  const slBefore = parseFloat(t.$("slider").value);
+  t.$("stepFwdSecBtn").click();
+  check("コマ送りボタン(+1秒)でスライダー位置が進み、初心者向けステップ表示がSTEP2アクティブになっている", Math.abs(parseFloat(t.$("slider").value) - (slBefore + 1)) < 1e-6 && t.$("step1").classList.contains("done") && t.$("step2").classList.contains("active") && t.$("gpuState").textContent.includes("GPU優先モード"));
 
   // 出力（標準）
   t.$("exportBtn").click(); t.$("exportBtn").dispatchEvent(new t.w.MouseEvent("click", { bubbles: true }));   // ボタンの無効化を迂回した2回目も、ガードで無視される
