@@ -22,7 +22,7 @@
       <div class="mark" aria-hidden="true">◐</div>
       <div>
         <h1>動画の顔を自動追尾してモザイク by 武庫</h1>
-        <p>動画の顔を自動で見つけて追いかけ、顔だけにモザイクをかけます。 ver2.1</p>
+        <p>動画の顔を自動で見つけて追いかけ、顔だけにモザイクをかけます（GPU優先・高速動体追尾対応）。 ver2.2</p>
       </div>
     </div>
     <div class="header-actions">
@@ -31,9 +31,15 @@
   </header>
 
   <div class="steps" aria-label="手順">
-    <span class="step">① 動画を選ぶ</span>
-    <span class="step">② プレビューで確認</span>
-    <span class="step">③ 出力して保存</span>
+    <span class="step active" id="step1">① 動画を選ぶ</span>
+    <span class="step" id="step2">② プレビューで確認・微調整</span>
+    <span class="step" id="step3">③ 出力して保存</span>
+  </div>
+
+  <div class="guide-bar" role="status" aria-live="polite">
+    <div class="guide-text" id="guideText">
+      <strong>はじめての方へ：</strong>まずは下の点線枠をクリックするか、動画ファイルをドロップしてください。動画はこのパソコンの中だけで安全に処理されます。
+    </div>
   </div>
 
   <div id="banner" class="status" role="alert" hidden></div>
@@ -41,57 +47,69 @@
   <div class="layout">
     <section class="panel" aria-labelledby="hPreview">
       <div class="panel-head">
-        <h2 id="hPreview">プレビュー</h2>
-        <button type="button" class="subtle" id="changeBtn" hidden>別の動画を選ぶ</button>
+        <h2 id="hPreview"><span class="step-tag">STEP 1 &amp; 2</span> プレビューと確認</h2>
+        <div class="panel-actions">
+          <span class="badge" id="previewStatus">動画未選択</span>
+          <button type="button" class="subtle" id="changeBtn" hidden>別の動画を選ぶ</button>
+        </div>
       </div>
 
       <label class="file-zone disabled" id="drop">
         <input type="file" id="fileInput" accept="video/*,.mkv,.mov,.m4v" disabled>
+        <div class="drop-icon" aria-hidden="true">＋</div>
         <span id="dropTitle">エンジンを準備しています…</span>
-        <small id="dropHint">mp4 / mov / m4v / webm / mkv（ここにドロップもできます）</small>
+        <small id="dropHint">対応形式: mp4 / mov / m4v / webm / mkv（最大4GB・ここにドラッグ＆ドロップもできます）</small>
       </label>
       <p class="meta" id="fileMeta" hidden></p>
 
       <div class="preview" id="preview">
         <div class="empty" id="empty">
-          <strong>動画を選ぶと、ここに表示されます</strong>
-          顔にモザイクが掛かった状態を確認できます。
+          <strong>動画を選ぶと、ここにモザイク適用後の画面が表示されます</strong>
+          スライダーで好きな場面を確認でき、画面上をドラッグして手動モザイクを追加することもできます。
         </div>
         <canvas id="previewCanvas" width="16" height="9" role="img" aria-label="モザイク適用後のプレビュー" hidden></canvas>
       </div>
 
-      <div class="field" id="timeline" hidden>
+      <div class="field timeline-box" id="timeline" hidden>
         <div class="field-header">
-          <label for="slider" class="field-title">再生位置</label>
+          <label for="slider" class="field-title">再生位置（スライダーまたはボタンで移動）</label>
           <span class="badge" id="timeLabel">00:00 / 00:00</span>
         </div>
         <input type="range" id="slider" min="0" max="0" step="0.04" value="0">
+        <div class="seek-tools" role="group" aria-label="再生位置の微調整">
+          <button type="button" class="subtle" id="stepBackSecBtn">-1秒</button>
+          <button type="button" class="subtle" id="stepBackFrameBtn">-1コマ</button>
+          <button type="button" class="subtle" id="stepFwdFrameBtn">+1コマ</button>
+          <button type="button" class="subtle" id="stepFwdSecBtn">+1秒</button>
+        </div>
       </div>
-      <p class="hint" id="previewNote" hidden>スライダーを動かすと、その位置のフレームに顔検出とモザイクを適用して表示します（少し時間がかかります）。検出できていない顔は、このプレビューの上をドラッグして囲むと、手動でモザイクを掛けられます。</p>
+      <p class="hint callout" id="previewNote" hidden>💡 スライダーやコマ送りボタンを動かすと、その位置のフレームに顔検出とモザイクを適用して表示します。万が一検出できていない顔がある場合は、上のプレビュー画面を直接ドラッグして四角く囲むだけで手動モザイクを追加できます。</p>
     </section>
 
     <div class="side">
       <section class="panel" aria-labelledby="hSettings">
-        <div class="panel-head"><h2 id="hSettings">出力設定</h2></div>
+        <div class="panel-head"><h2 id="hSettings"><span class="step-tag">設定</span> 出力・認識設定</h2></div>
         <div class="controls">
           <div class="field">
             <label for="quality">出力品質</label>
             <select id="quality">
-              <option value="standard" selected>標準画質（高品質）</option>
-              <option value="compact">軽量コンパクト（容量約0.40倍を目標）</option>
+              <option value="standard" selected>標準画質（高品質・そのままの綺麗さ）</option>
+              <option value="compact">軽量コンパクト（容量約0.40倍・共有向け）</option>
             </select>
           </div>
           <div class="field">
-            <label for="accuracy">顔検出の精度</label>
+            <label for="accuracy">顔検出の精度・動体追尾</label>
             <select id="accuracy">
-              <option value="high" selected>高精度（標準）</option>
-              <option value="fast">高速（約2倍速。小さい顔は見逃しやすい）</option>
+              <option value="high" selected>高精度＋動体追尾強化（推奨・標準）</option>
+              <option value="motion">超高精度・高速移動特化（素早く動く人物・スポーツ向け）</option>
+              <option value="fast">高速（約2倍速・小さい顔や速い動きは見逃しやすい）</option>
             </select>
-            <small>この端末の性能によっては、1分の動画に数分かかります。</small>
+            <small>速く動く人物には「高精度」または「超高精度・高速移動特化」が適しています。</small>
           </div>
           <div class="field">
-            <span class="field-title">顔認識エンジン</span>
+            <span class="field-title">顔認識エンジン・GPU状態</span>
             <div class="status" id="engineState">準備中…</div>
+            <div class="gpu-badge fallback" id="gpuState">GPU優先モードを確認しています…</div>
             <div id="modelPick" hidden>
               <button type="button" class="subtle" id="modelBtn">モデルファイル(.onnx)を選択</button>
               <input type="file" id="modelInput" accept=".onnx" hidden>
@@ -102,16 +120,20 @@
 
       <section class="panel" aria-labelledby="hManual">
         <div class="panel-head">
-          <h2 id="hManual">手動モザイク</h2>
+          <h2 id="hManual"><span class="step-tag">補助</span> 手動モザイク（任意）</h2>
           <button type="button" class="subtle" id="clearRegionsBtn" disabled>すべて削除</button>
         </div>
-        <p class="hint">顔が検出されていないときは、左のプレビューの上をドラッグして範囲を指定します。そのフレームの時刻から、同じ位置にモザイクを掛けます（顔認識は使いません）。継続秒数を空にすると、動画の最後まで掛かります。</p>
+        <ol class="manual-steps">
+          <li>隠したい場面を左のプレビューで表示する</li>
+          <li>プレビュー画面の上をドラッグして四角く囲む</li>
+          <li>開始秒数と継続秒数を確認（継続を空欄にすると動画の最後まで適用）</li>
+        </ol>
         <ul class="region-list" id="regionList" aria-label="手動モザイクの範囲の一覧"></ul>
-        <p class="hint" id="regionEmpty">指定した範囲はまだありません。</p>
+        <p class="hint" id="regionEmpty">指定した範囲はまだありません（自動認識だけで十分な場合は操作不要です）。</p>
       </section>
 
       <section class="panel" aria-labelledby="hExport">
-        <div class="panel-head"><h2 id="hExport">書き出し</h2></div>
+        <div class="panel-head"><h2 id="hExport"><span class="step-tag">STEP 3</span> 書き出し・保存</h2></div>
         <div class="action-stack">
           <button type="button" class="primary" id="exportBtn" disabled>動画を出力</button>
           <button type="button" class="secondary" id="cancelBtn" disabled>中断</button>
@@ -123,7 +145,7 @@
       </section>
 
       <section class="panel result" id="result" aria-labelledby="hResult" hidden>
-        <div class="panel-head"><h2 id="hResult">出力結果</h2></div>
+        <div class="panel-head"><h2 id="hResult"><span class="step-tag">完了</span> 出力結果</h2></div>
         <video id="resultVideo" controls playsinline preload="metadata"></video>
         <p class="meta" id="resultSummary"></p>
         <div class="status warn" id="resultWarn" hidden></div>
@@ -133,7 +155,7 @@
       </section>
 
       <div class="privacy">
-        動画はこのパソコンの中だけで処理され、外部には送信されません。処理中はこのタブを閉じたり、別のタブに切り替えたりしないでください（ブラウザが処理を遅くすることがあります）。
+        🔒 <strong>プライバシー保護：</strong>動画はこのパソコンの中だけで処理され、外部のサーバーには一切送信されません。処理中はこのタブを閉じたり、別のタブに切り替えたりしないでください。
       </div>
     </div>
   </div>

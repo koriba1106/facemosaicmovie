@@ -1,53 +1,54 @@
 {
   "version": 1,
+  "algorithm": "SHA-256",
   "files": {
     "index.html": {
-      "sha256": "856780bce10f5f82b65ad272d2805d720adb498ff37d591ea42f927efe38ff04",
-      "size": 7588
+      "size": 9614,
+      "sha256": "a671ae10036750cc5c04c7374613783c12f8d0ceeddf9bcfed899194eab1224e"
     },
     "selfcheck.html": {
-      "sha256": "cf8113462a4df949ceb440f435daf059b22771285dba6400d4e4158a6a6d2fbd",
-      "size": 2625
+      "size": 2911,
+      "sha256": "db930b0e808d23c8353baa49d86f141fb600f35face4c49f1a0a162a0495a034"
     },
     "style.css": {
-      "sha256": "80b13d89ba2e91e45f3877f7eafe778ddda8377b20a423d55539479376cfb172",
-      "size": 8510
+      "size": 9695,
+      "sha256": "21c412b87cc024af7fd8941337cb9a7f976a38e2dec9ef94561f9ae0e23529d9"
     },
     "app.css": {
-      "sha256": "f2d1647474a0137adcc510a693330597f887b67cb92139dbeabfe6031e214305",
-      "size": 3979
+      "size": 7089,
+      "sha256": "2c4aa3eb6f45addb9c407c04fa007bd946a7d2e6a92e376c55d669be18dca595"
     },
     "js/app.js": {
-      "sha256": "adf58a35cc272b7985a85c11b352b737a90f6d5066002cfc99d163b04f09a641",
-      "size": 31859
+      "size": 36650,
+      "sha256": "3f8357b9d989723418f1906f17b0c0a96c3c8cd46fd5c13e6b7a81b3b5577230"
     },
     "js/core.js": {
-      "sha256": "2193f40395bb8f1f2d138b65d322f41b820f7f4cc2a6183dbd4f4c5611142b71",
-      "size": 29114
+      "size": 37687,
+      "sha256": "192828d08da25208fb9b35db58ea090bc3c8a26d8693f8437e78181c383803e7"
     },
     "js/pipeline.js": {
-      "sha256": "ee5e55bafc4250e4cf59a97fdc725ea4b530375144890f0db57b1fbf97d28538",
-      "size": 9866
+      "size": 19845,
+      "sha256": "fd48cceae80cb414633e2d45b97a1eae1b38cc357d922cee04edb99ee0ca32f8"
     },
     "js/selfcheck.js": {
-      "sha256": "7e8ea4669997b73de74fe78ea01dd3c03c733b54a441e9ff79842a18d3ec9c11",
-      "size": 30047
+      "size": 31112,
+      "sha256": "bc0efb1a6fc14cd99cbfbb10888a76fc05094290cb61a9e142146a8bf6ebd205"
     },
     "js/worker.js": {
-      "sha256": "84d4c54e4d62aef055d5612ffd5fcf75355901c6fc8fed13fe8b6f0b8e9d7af4",
-      "size": 15708
+      "size": 20779,
+      "sha256": "03e0fc8eaff8cfcbec11d6a46aa7657a2d28fc1aa9d5c7b65f9f292f25bebcf0"
     },
     "vendor/mediabunny.min.js": {
-      "sha256": "d7b3a90e82158a7022729cbd4f861daf73cbb4f69d23349d2aefc9c8281cf70c",
-      "size": 691220
+      "size": 691220,
+      "sha256": "d7b3a90e82158a7022729cbd4f861daf73cbb4f69d23349d2aefc9c8281cf70c"
     },
     "vendor/opencv.js": {
-      "sha256": "b873c8211421da7b9bf41ae157a923f05a46a0b8d3e5904c44c6f3ad6d39a1bd",
-      "size": 13298869
+      "size": 13298869,
+      "sha256": "b873c8211421da7b9bf41ae157a923f05a46a0b8d3e5904c44c6f3ad6d39a1bd"
     },
     "models/face_detection_yunet_2026may.onnx": {
-      "sha256": "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0",
-      "size": 229738
+      "size": 229738,
+      "sha256": "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0"
     }
   }
 }

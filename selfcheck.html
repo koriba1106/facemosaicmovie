@@ -19,33 +19,37 @@
     <div class="brand">
       <div class="mark" aria-hidden="true">◐</div>
       <div>
-        <h1>動作診断</h1>
-        <p>この環境（ブラウザ・配置したファイル・顔認識モデル）で動くかを、順番に確認します。設置後に最初に1回実行してください。</p>
+        <h1>動作診断（セルフチェック）</h1>
+        <p>この環境（ブラウザ・GPU高速化・配置したファイル・顔認識モデル）で正常に動作するかを順番に確認します。設置後に最初に1回実行してください。</p>
       </div>
     </div>
-    <div class="header-actions"><button type="button" class="subtle" id="backBtn">アプリに戻る</button></div>
+    <div class="header-actions"><button type="button" class="subtle" id="backBtn">← アプリに戻る</button></div>
   </header>
 
   <section class="panel">
-    <div class="panel-head"><h2>診断</h2></div>
+    <div class="panel-head">
+      <h2>診断ステップ</h2>
+      <span class="badge ok">外部通信なし・端末内完結</span>
+    </div>
     <div class="controls">
       <label class="file-zone" id="vidZone">
         <input type="file" id="vid" accept="video/*,.mkv,.mov,.m4v">
+        <span class="file-zone-icon" aria-hidden="true">🎬</span>
         <span id="vidTitle">通しテスト用の動画を選ぶ（任意・推奨）</span>
-        <small>実際に使う動画（スマホの縦動画を含む）で、先頭3秒を変換して確認します。動画は外部に送信されません。</small>
+        <small>実際に使う動画（スマホの縦動画や動きの速い動画を含む）で、先頭3秒を変換して確認します。動画は外部に送信されません。</small>
       </label>
       <div class="button-row">
-        <button type="button" class="primary" id="runBtn">診断を開始</button>
+        <button type="button" class="primary" id="runBtn">診断を開始する</button>
       </div>
       <ul class="check-list" id="rows" aria-live="polite"></ul>
       <div class="verdict" id="verdict" hidden></div>
       <div class="figs" id="figs"></div>
       <div class="field">
         <div class="field-header">
-          <span class="field-title">結果のコピー（問い合わせ時にそのまま貼り付けてください）</span>
+          <span class="field-title">診断レポートのコピー（問い合わせ時にそのまま貼り付けてください）</span>
           <button type="button" class="subtle" id="copyBtn">コピー</button>
         </div>
-        <pre class="test-box" id="report">（診断を開始すると、ここに結果が表示されます）</pre>
+        <pre class="test-box" id="report">（上の「診断を開始する」を押すと、ここに結果が表示されます）</pre>
       </div>
     </div>
   </section>
